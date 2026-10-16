@@ -1,0 +1,1 @@
+{"version":1,"plan":"docs/plans/2026-10-16-recovery-operations.md","phase":"work","status":"active","updated_at":"2026-10-16T08:01:28.022Z","next":"Implement frozen dispatch recovery admin and alert contracts with tests","acceptance_protocol":"v1"}

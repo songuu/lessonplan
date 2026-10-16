@@ -1,0 +1,11 @@
+{
+  "version": "1.0.0",
+  "matching_weights": {"school_stage": 2, "grade": 3, "subject": 4, "lesson_type": 1},
+  "minimum_personal_score": 2,
+  "maximum_references": 2,
+  "system_styles": [
+    {"id": "primary_tasks", "stages": ["primary"], "style": "短环节、明确操作和直观材料，提供学生表达支架与当堂检查。"},
+    {"id": "secondary_inquiry", "stages": ["junior", "senior"], "style": "问题引导、概念条件与证据推理，安排迁移任务和可核对的评价标准。"},
+    {"id": "neutral", "stages": [], "style": "简洁、任务明确、课堂动作可执行、评价可操作。"}
+  ]
+}

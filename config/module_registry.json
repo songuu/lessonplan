@@ -1,0 +1,18 @@
+{
+  "version": "1.0.0",
+  "modules": [
+    {"module_type":"textbook_analysis","name":"教材分析","default":true,"importance":"core","depends_on":[],"summary":"基于课题和已提供材料分析内容价值；没有教材原文时注明需核对。"},
+    {"module_type":"teaching_objectives","name":"教学目标","default":true,"importance":"core","depends_on":["textbook_analysis"],"summary":"使用可观察行为描述目标、达成条件和判断标准。"},
+    {"module_type":"key_difficult_points","name":"教学重难点","default":true,"importance":"core","depends_on":["teaching_objectives"],"summary":"区分核心重点、认知障碍和可执行突破方法。"},
+    {"module_type":"teaching_methods","name":"教学方法","default":true,"importance":"core","depends_on":["teaching_objectives","key_difficult_points"],"summary":"说明方法、使用时机和学习证据，避免只罗列术语。"},
+    {"module_type":"teaching_preparation","name":"教学准备","default":true,"importance":"core","depends_on":["teaching_objectives"],"summary":"列出师生材料、安全条件和无设备替代方案。"},
+    {"module_type":"teaching_process","name":"教学过程","default":true,"importance":"core","depends_on":["teaching_objectives","key_difficult_points","teaching_methods","teaching_preparation"],"summary":"围绕目标组织师生活动、任务、预期证据和即时评价。"},
+    {"module_type":"blackboard_design","name":"板书设计","default":true,"importance":"core","depends_on":["teaching_objectives","teaching_process"],"summary":"以清晰层级展示本课核心概念及关系。"},
+    {"module_type":"student_analysis","name":"学情分析","default":false,"importance":"optional","depends_on":[],"summary":"保守分析已有知识、可能困难和差异支持，不臆测真实班级数据。"},
+    {"module_type":"classroom_practice","name":"课堂练习","default":false,"importance":"optional","depends_on":["teaching_objectives","teaching_process"],"summary":"提供具体题目、答案或判断标准和分层支持。"},
+    {"module_type":"assessment_task","name":"评价设计","default":false,"importance":"optional","depends_on":["teaching_objectives","teaching_process"],"summary":"把目标与任务、证据、评价标准一一对应。"},
+    {"module_type":"homework_design","name":"作业设计","default":false,"importance":"optional","depends_on":["teaching_objectives","teaching_process"],"summary":"设计基础与拓展任务、预计时长及可核对标准。"},
+    {"module_type":"design_intent","name":"整体设计思路","default":false,"importance":"optional","depends_on":["teaching_objectives","teaching_process"],"summary":"解释学习任务与目标和评价的连贯关系。"},
+    {"module_type":"custom_module","name":"自定义模块","default":false,"importance":"optional","depends_on":[],"summary":"严格按教师模块名称与摘要组织具体可执行内容。"}
+  ]
+}

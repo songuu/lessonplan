@@ -1,0 +1,65 @@
+name: checks
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.9.21'
+      - run: uv sync --frozen
+      - run: uv run ruff check .
+      - run: uv run pytest -q --basetemp=.cache/pytest
+      - run: uv run python scripts/validate_assets.py
+      - run: uv run alembic upgrade head
+      - run: uv run alembic check
+      - run: docker compose config --quiet
+      - run: git diff --check
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+      - run: npm audit --audit-level=high
+  asynchronous-integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-bookworm
+        env:
+          POSTGRES_USER: lesson_test
+          POSTGRES_PASSWORD: isolated-ci-only
+          POSTGRES_DB: lesson_test
+        ports: ['15432:5432']
+        options: >-
+          --health-cmd 'pg_isready -U lesson_test -d lesson_test'
+          --health-interval 5s --health-timeout 5s --health-retries 15
+      redis:
+        image: redis:7.4-bookworm
+        ports: ['16379:6379']
+        options: >-
+          --health-cmd 'redis-cli ping'
+          --health-interval 5s --health-timeout 5s --health-retries 15
+    env:
+      LESSON_EXTERNAL_DATABASE_URL: postgresql+asyncpg://lesson_test:isolated-ci-only@127.0.0.1:15432/lesson_test
+      LESSON_EXTERNAL_REDIS_URL: redis://127.0.0.1:16379/15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.9.21'
+      - run: uv sync --frozen
+      - run: uv run python scripts/test_external_runtime.py

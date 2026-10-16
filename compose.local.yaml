@@ -1,0 +1,17 @@
+# Reuse rag-nextjs's PostgreSQL 17 on 127.0.0.1:5432.
+# Only this project's Redis is managed by this local development topology.
+name: lesson-assistant-local
+services:
+  redis:
+    image: redis:alpine3.22
+    ports: [127.0.0.1:56379:6379]
+    command: [redis-server, --appendonly, 'yes']
+    volumes: [lesson-redis:/data]
+    restart: unless-stopped
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+volumes:
+  lesson-redis:

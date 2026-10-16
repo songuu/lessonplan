@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["run_id", "sequence", "event_type", "payload"],
+  "additionalProperties": false,
+  "properties": {
+    "run_id": {"type": "string", "minLength": 1},
+    "sequence": {"type": "integer", "minimum": 1},
+    "event_type": {"enum": ["run_started", "style_context_resolved", "structured_step_started", "message_started", "module_progress", "module_started", "stage_started", "content_delta", "stage_done", "module_done", "polish_ready", "structured_step_ready", "draft_ready", "interrupted", "run_completed", "run_failed", "run_cancelled", "heartbeat"]},
+    "payload": {"type": "object"}
+  },
+  "allOf": [
+    {"if": {"properties": {"event_type": {"const": "content_delta"}}}, "then": {"properties": {"payload": {"required": ["delta"], "properties": {"delta": {"type": "string"}, "replace_previous": {"type": "boolean"}, "is_temporary": {"type": "boolean"}}}}}},
+    {"if": {"properties": {"event_type": {"enum": ["module_started", "module_done", "stage_started", "stage_done"]}}}, "then": {"properties": {"payload": {"required": ["module_id"], "properties": {"module_id": {"type": ["string", "null"]}}}}}}
+  ]
+}

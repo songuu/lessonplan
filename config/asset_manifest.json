@@ -1,0 +1,227 @@
+{
+  "version": "1.0.0",
+  "assets": [
+    {
+      "path": "config/lesson_quality_patterns.json",
+      "sha256": "8764ea3d41979cc2beecb0ee78adef81bdd0d78b24263678b11a53ec22202b01",
+      "status": "active",
+      "consumer": "app.ai.assets.AssetBundle / app.ai.runtime.LessonRuntime / app.ai.quality"
+    },
+    {
+      "path": "config/module_registry.json",
+      "sha256": "426201481475a63795f32075fe0a487ab770909c353ae27bc9df0cc29e642641",
+      "status": "active",
+      "consumer": "app.ai.assets.AssetBundle / app.ai.runtime.LessonRuntime / app.ai.quality"
+    },
+    {
+      "path": "config/safe_patch_policy.json",
+      "sha256": "ad2e7a95a9e61cb95ac7022fedc8b2d9ad194200b5e60f6ec0a71a3ca0bb8508",
+      "status": "active",
+      "consumer": "app.ai.assets.AssetBundle / app.ai.runtime.LessonRuntime / app.ai.quality"
+    },
+    {
+      "path": "schemas/generated_modules.schema.json",
+      "sha256": "4be38e63de6e44b126cab0cf91b8e993d8f408b7429bdbf922506ba30b3fbc08",
+      "status": "active",
+      "consumer": "app.ai.assets.AssetBundle / app.ai.runtime.LessonRuntime / app.ai.quality"
+    },
+    {
+      "path": "schemas/lesson_blueprint.schema.json",
+      "sha256": "8348c99156190a0943c6b1e734b34326b05ec4ec8e3651466dde648c151475e4",
+      "status": "active",
+      "consumer": "app.ai.assets.AssetBundle / app.ai.runtime.LessonRuntime / app.ai.quality"
+    },
+    {
+      "path": "schemas/review_findings.schema.json",
+      "sha256": "ab8e114be97bdd4aa2a8398420032b60d8a2c6113bdcb9325545959ebbb8951a",
+      "status": "active",
+      "consumer": "app.ai.assets.AssetBundle / app.ai.runtime.LessonRuntime / app.ai.quality"
+    },
+    {
+      "path": "schemas/teaching_outline.schema.json",
+      "sha256": "b6114ce4066c371631a09d2bf60414de1183556777bc15d93765a1d8a8e2ae04",
+      "status": "active",
+      "consumer": "app.ai.assets.AssetBundle / app.ai.runtime.LessonRuntime / app.ai.quality"
+    },
+    {
+      "path": "prompts/blueprint.md",
+      "sha256": "be88bd083390dbec4a660358426f5b819057426f6b789b8962bbf6bf348b5bd3",
+      "status": "active",
+      "consumer": "app.ai.assets.AssetBundle / app.ai.runtime.LessonRuntime / app.ai.quality"
+    },
+    {
+      "path": "prompts/json_fallback.md",
+      "sha256": "ba11d6bf6f856b3205259e88164408250985476b256fc4e47c45459e032dbf92",
+      "status": "active",
+      "consumer": "app.ai.assets.AssetBundle / app.ai.runtime.LessonRuntime / app.ai.quality"
+    },
+    {
+      "path": "prompts/module_generation/assessment_task.md",
+      "sha256": "8e81c8ad907f41dabb9bcdf32074cec16267b0f8ec833c8b12421b375a329901",
+      "status": "active",
+      "consumer": "app.ai.assets.AssetBundle / app.ai.runtime.LessonRuntime / app.ai.quality"
+    },
+    {
+      "path": "prompts/module_generation/blackboard_design.md",
+      "sha256": "506780e707183b2c0fd8d2de29baab6788980033db594ce4b07553cb14010bc6",
+      "status": "active",
+      "consumer": "app.ai.assets.AssetBundle / app.ai.runtime.LessonRuntime / app.ai.quality"
+    },
+    {
+      "path": "prompts/module_generation/classroom_practice.md",
+      "sha256": "b8ca079d6c0047831f7c9e578a77e6128210d30f2c5f8ac23a7cb1c3adbdbbdf",
+      "status": "active",
+      "consumer": "app.ai.assets.AssetBundle / app.ai.runtime.LessonRuntime / app.ai.quality"
+    },
+    {
+      "path": "prompts/module_generation/custom_module.md",
+      "sha256": "95ff224a92089dd76f60439b90653806fca2160251d81c6c6551d0a7489784d5",
+      "status": "active",
+      "consumer": "app.ai.assets.AssetBundle / app.ai.runtime.LessonRuntime / app.ai.quality"
+    },
+    {
+      "path": "prompts/module_generation/design_intent.md",
+      "sha256": "2320a9365a73249fcbf106afef712dc57b33bd7cd0957fd8b9cfacea0f05eec9",
+      "status": "active",
+      "consumer": "app.ai.assets.AssetBundle / app.ai.runtime.LessonRuntime / app.ai.quality"
+    },
+    {
+      "path": "prompts/module_generation/homework_design.md",
+      "sha256": "e3fed1c9b5f99c5b78fa13ddad7c0a682f9e14332cce142cfe0ec8dd44a9c4ac",
+      "status": "active",
+      "consumer": "app.ai.assets.AssetBundle / app.ai.runtime.LessonRuntime / app.ai.quality"
+    },
+    {
+      "path": "prompts/module_generation/key_difficult_points.md",
+      "sha256": "fb8fa4b6a9499a5718557544e73bfab70e86e59d1649f6cc1b91c68701f7629d",
+      "status": "active",
+      "consumer": "app.ai.assets.AssetBundle / app.ai.runtime.LessonRuntime / app.ai.quality"
+    },
+    {
+      "path": "prompts/module_generation/student_analysis.md",
+      "sha256": "cc5ecdc91560034366a0f988b78c38c35da84897dc871503998be07f084717ff",
+      "status": "active",
+      "consumer": "app.ai.assets.AssetBundle / app.ai.runtime.LessonRuntime / app.ai.quality"
+    },
+    {
+      "path": "prompts/module_generation/teaching_methods.md",
+      "sha256": "62ffe685e62f1011982ed0f148651706abd0240c13d70dd8a46cfc55f4155b62",
+      "status": "active",
+      "consumer": "app.ai.assets.AssetBundle / app.ai.runtime.LessonRuntime / app.ai.quality"
+    },
+    {
+      "path": "prompts/module_generation/teaching_objectives.md",
+      "sha256": "ca5c144c70f7708fa1c632c2a32bea8093f0b944a8a600e06740a88d73fe2bb4",
+      "status": "active",
+      "consumer": "app.ai.assets.AssetBundle / app.ai.runtime.LessonRuntime / app.ai.quality"
+    },
+    {
+      "path": "prompts/module_generation/teaching_preparation.md",
+      "sha256": "7bf6ab1dc202fc00aedd601c0f383a2f7433de77998feb6ca067a951bf2986af",
+      "status": "active",
+      "consumer": "app.ai.assets.AssetBundle / app.ai.runtime.LessonRuntime / app.ai.quality"
+    },
+    {
+      "path": "prompts/module_generation/teaching_process.md",
+      "sha256": "4f4d9cf01ddc60c4ce15f64a43e282da2e9014912f468f95d419b50678bd058e",
+      "status": "active",
+      "consumer": "app.ai.assets.AssetBundle / app.ai.runtime.LessonRuntime / app.ai.quality"
+    },
+    {
+      "path": "prompts/module_generation/textbook_analysis.md",
+      "sha256": "6ff3acd8058edbc1ebda7b2c3564b1d386d556f03be49141165e055af4685025",
+      "status": "active",
+      "consumer": "app.ai.assets.AssetBundle / app.ai.runtime.LessonRuntime / app.ai.quality"
+    },
+    {
+      "path": "prompts/one_click.md",
+      "sha256": "624215b96fc9429d7beafc533e0a0f38da1a9b72b9369ec625b907627c8b8b2b",
+      "status": "active",
+      "consumer": "app.ai.assets.AssetBundle / app.ai.runtime.LessonRuntime / app.ai.quality"
+    },
+    {
+      "path": "prompts/polish.md",
+      "sha256": "690837f67bc3f68c0afd90950d7dc58e41a773ca144d83cb3fe19ce3f626429e",
+      "status": "active",
+      "consumer": "app.ai.assets.AssetBundle / app.ai.runtime.LessonRuntime / app.ai.quality"
+    },
+    {
+      "path": "prompts/review.md",
+      "sha256": "373009f1a8bfa7965ed2624517b04cbe4e5455ef40bcafc411a94f21a1571cd2",
+      "status": "active",
+      "consumer": "app.ai.assets.AssetBundle / app.ai.runtime.LessonRuntime / app.ai.quality"
+    },
+    {
+      "path": "prompts/structured.md",
+      "sha256": "8151cdd618230a756b66b06094407568cd86b28f1beb8a1858e7a6a835303f1d",
+      "status": "active",
+      "consumer": "app.ai.assets.AssetBundle / app.ai.runtime.LessonRuntime / app.ai.quality"
+    },
+    {
+      "path": "prompts/subject_guides/chinese.md",
+      "sha256": "11e1b2cfca60325a841e76abc4e7309ec258483252cf3fd27f636ba30d327cc8",
+      "status": "active",
+      "consumer": "app.ai.assets.AssetBundle / app.ai.runtime.LessonRuntime / app.ai.quality"
+    },
+    {
+      "path": "prompts/subject_guides/english.md",
+      "sha256": "538d859df5d2bd8ad013ac2dc9b7b1e8578ee0d3c0dd5461754bd132a179c8e6",
+      "status": "active",
+      "consumer": "app.ai.assets.AssetBundle / app.ai.runtime.LessonRuntime / app.ai.quality"
+    },
+    {
+      "path": "prompts/subject_guides/general.md",
+      "sha256": "2f070e7caf253874b7a13639815061c365c196c9ab2b5a0398df1df4485105b2",
+      "status": "active",
+      "consumer": "app.ai.assets.AssetBundle / app.ai.runtime.LessonRuntime / app.ai.quality"
+    },
+    {
+      "path": "prompts/subject_guides/humanities.md",
+      "sha256": "b58f9d069dbc3db76c08e9d25afb30ab8e37df30ddd22462ea9dfce7bb6e63b2",
+      "status": "active",
+      "consumer": "app.ai.assets.AssetBundle / app.ai.runtime.LessonRuntime / app.ai.quality"
+    },
+    {
+      "path": "prompts/subject_guides/math.md",
+      "sha256": "6869d3247c0802f212b5e4d7a914054af0df1499974c42ec3fbc8d57b09ef2a3",
+      "status": "active",
+      "consumer": "app.ai.assets.AssetBundle / app.ai.runtime.LessonRuntime / app.ai.quality"
+    },
+    {
+      "path": "prompts/subject_guides/science.md",
+      "sha256": "e27d0c9f78c9c858770d5f834a87db924bdb882d4732ec340323f7e7163d5f60",
+      "status": "active",
+      "consumer": "app.ai.assets.AssetBundle / app.ai.runtime.LessonRuntime / app.ai.quality"
+    },
+    {
+      "path": "prompts/system_prompt.md",
+      "sha256": "d58c7bbe7e63368bf1c85f2de861fbafef24633f7230de28fedba2320548cb25",
+      "status": "active",
+      "consumer": "app.ai.assets.AssetBundle / app.ai.runtime.LessonRuntime / app.ai.quality"
+    },
+    {
+      "path": "prompts/teacher_output_contract.md",
+      "sha256": "eea353e5e3f9b15609752d3a356e9ba74bc7c152e7ece473e7d1040c54645e80",
+      "status": "active",
+      "consumer": "app.ai.assets.AssetBundle / app.ai.runtime.LessonRuntime / app.ai.quality"
+    },
+    {
+      "path": "policies/runtime_policy.json",
+      "sha256": "fa2efef0d09af8be1d38a17491cf44fe897f9006c7d1f5607a9c05608cf0b887",
+      "status": "active",
+      "consumer": "app.ai.assets.AssetBundle / app.ai.runtime.LessonRuntime / app.ai.quality"
+    },
+    {
+      "path": "schemas/stream_event.schema.json",
+      "sha256": "04e9f7b4afd3186dca4933024d66aecd63f4f6b9d13aa3b4dfb7d0b3d25c7cdf",
+      "status": "active",
+      "consumer": "app.services.lessons.event"
+    },
+    {
+      "path": "config/lesson_style_registry.json",
+      "sha256": "3269087aff737cb7e26f9c2e1ece0b5c304e088ff1a385e6b3f1f7d7a2261b91",
+      "status": "active",
+      "consumer": "app.api.lessons.style_context"
+    }
+  ]
+}

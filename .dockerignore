@@ -1,0 +1,16 @@
+.git
+.agents
+.codex
+.venv
+**/node_modules
+**/.env
+**/.env.*
+.env*
+**/__pycache__
+**/.cache
+var
+*.db*
+frontend/dist
+tests
+docs
+*.md

@@ -1,0 +1,1 @@
+{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","required":["topic","objectives"],"properties":{"topic":{"type":"string","minLength":1},"version":{"type":"integer"},"objectives":{"type":"array","items":{"type":"string"}},"assessment_specs":{"type":"array"},"style_intent":{"type":"object"}},"additionalProperties":true}

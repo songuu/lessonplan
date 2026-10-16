@@ -1,0 +1,99 @@
+name: lesson-assistant
+x-app: &app
+  image: lesson-assistant:local
+  build: .
+  environment: &env
+    ENVIRONMENT: development
+    DATABASE_URL: postgresql+asyncpg://lesson:local-dev-password@postgres:5432/lesson
+    REDIS_URL: redis://redis:6379/0
+    TASK_QUEUE_MODE: arq
+    AI_PROVIDER: ${AI_PROVIDER:-mock}
+    JWT_SECRET: ${JWT_SECRET:-local-development-only-change-before-production}
+    LLM_BASE_URL: ${LLM_BASE_URL:-}
+    LLM_API_KEY: ${LLM_API_KEY:-}
+    LLM_MODEL: ${LLM_MODEL:-}
+    STORAGE_ROOT: /app/var/storage
+  volumes: [lesson-files:/app/var/storage]
+  stop_grace_period: 340s
+  depends_on:
+    migrate: {condition: service_completed_successfully}
+    redis: {condition: service_healthy}
+  restart: unless-stopped
+  command: [/app/.venv/bin/arq, app.tasks.workers.OneClickWorkerSettings]
+  healthcheck:
+    test: [CMD, /app/.venv/bin/arq, app.tasks.workers.OneClickWorkerSettings, --check]
+    interval: 20s
+    timeout: 5s
+    start_period: 20s
+services:
+  postgres:
+    image: postgres:16.6-bookworm
+    environment: {POSTGRES_USER: lesson, POSTGRES_PASSWORD: local-dev-password, POSTGRES_DB: lesson}
+    ports: [127.0.0.1:55432:5432]
+    volumes: [lesson-db:/var/lib/postgresql/data]
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U lesson -d lesson]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+  redis:
+    image: redis:7.4.1-bookworm
+    ports: [127.0.0.1:56379:6379]
+    command: [redis-server, --appendonly, 'yes']
+    volumes: [lesson-redis:/data]
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+  migrate:
+    image: lesson-assistant:local
+    build: .
+    environment: *env
+    command: [/app/.venv/bin/alembic, upgrade, head]
+    depends_on:
+      postgres: {condition: service_healthy}
+    restart: 'no'
+  api:
+    <<: *app
+    command: [/app/.venv/bin/uvicorn, main:app, --host, 0.0.0.0, --port, '8000']
+    ports: [127.0.0.1:8000:8000]
+    healthcheck:
+      test: [CMD, /app/.venv/bin/python, -c, "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/ready',timeout=3)"]
+      interval: 20s
+      timeout: 5s
+  one-click: *app
+  structured:
+    <<: *app
+    command: [/app/.venv/bin/arq, app.tasks.workers.StructuredWorkerSettings]
+    healthcheck:
+      test: [CMD, /app/.venv/bin/arq, app.tasks.workers.StructuredWorkerSettings, --check]
+  module-polish:
+    <<: *app
+    command: [/app/.venv/bin/arq, app.tasks.workers.ModulePolishWorkerSettings]
+    healthcheck:
+      test: [CMD, /app/.venv/bin/arq, app.tasks.workers.ModulePolishWorkerSettings, --check]
+  export:
+    <<: *app
+    command: [/app/.venv/bin/arq, app.tasks.workers.ExportWorkerSettings]
+    healthcheck:
+      test: [CMD, /app/.venv/bin/arq, app.tasks.workers.ExportWorkerSettings, --check]
+  thumbnail:
+    <<: *app
+    command: [/app/.venv/bin/arq, app.tasks.workers.ThumbnailWorkerSettings]
+    healthcheck:
+      test: [CMD, /app/.venv/bin/arq, app.tasks.workers.ThumbnailWorkerSettings, --check]
+  internal-review:
+    <<: *app
+    command: [/app/.venv/bin/arq, app.tasks.workers.InternalReviewWorkerSettings]
+    healthcheck:
+      test: [CMD, /app/.venv/bin/arq, app.tasks.workers.InternalReviewWorkerSettings, --check]
+  maintenance:
+    <<: *app
+    command: [/app/.venv/bin/arq, app.tasks.workers.MaintenanceWorkerSettings]
+    healthcheck:
+      test: [CMD, /app/.venv/bin/arq, app.tasks.workers.MaintenanceWorkerSettings, --check]
+volumes:
+  lesson-db:
+  lesson-redis:
+  lesson-files:
