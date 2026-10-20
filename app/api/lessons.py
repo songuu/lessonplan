@@ -282,16 +282,20 @@ async def step(draft_id: str, body: Step, request: Request, user: Teacher, sessi
             raise AppError("OUTLINE_NOT_CONFIRMED", "请先确认教学过程大纲", 409)
     elif stage:
         raise AppError("INVALID_STAGE", "此模块不支持教学过程阶段", 422)
-    # Generation follows the frozen order; unconfirmed earlier candidates are never stable context.
-    for preceding in draft.modules:
-        if preceding["module_id"] == body.module_id:
-            break
-        if preceding.get("enabled", True) and draft.module_state_map.get(preceding["module_id"], {}).get("confirmation_status") != "confirmed":
-            raise AppError("PREVIOUS_MODULE_UNCONFIRMED", "请先确认前面的模块", 409)
+    require_previous_confirmed(draft, body.module_id)
     run = await create_run(session, draft, user, "interactive_step", {"module_id": body.module_id, "stage": stage}, key_or_new(idempotency_key))
     await session.commit()
     await dispatch(request, run)
     return {"data": {"draft_id": draft.id, "run_id": run.id}}
+
+
+def require_previous_confirmed(draft, module_id):
+    # Both generation and confirmation follow the same frozen module order.
+    for preceding in draft.modules:
+        if preceding["module_id"] == module_id:
+            break
+        if preceding.get("enabled", True) and draft.module_state_map.get(preceding["module_id"], {}).get("confirmation_status") != "confirmed":
+            raise AppError("PREVIOUS_MODULE_UNCONFIRMED", "请先确认前面的模块", 409)
 
 
 @router.post("/lesson-drafts/{draft_id}/interactive/confirm")
@@ -301,6 +305,7 @@ async def confirm(draft_id: str, body: Confirm, user: Teacher, session: Session)
     check_lock(draft, body.module_id, body)
     if await active_run(session, draft.id):
         raise AppError("RUN_ACTIVE", "请等待当前生成完成", 409)
+    require_previous_confirmed(draft, body.module_id)
     vid = draft.current_module_version_map.get(body.module_id)
     version = await session.get(ModuleVersion, vid) if vid else None
     if not version:
@@ -486,8 +491,11 @@ async def stream(run_id: str, request: Request, user: Teacher, session: Session,
 
 @router.post("/module-polish-sessions")
 async def polish_create(body: PolishCreate, user: Teacher, session: Session):
-    draft = await owned(session, Draft, body.draft_id, user)
+    # Serialize with foreground task admission before opening a mutable AI session.
+    draft = await owned(session, Draft, body.draft_id, user, lock=True)
     config_for(draft, body.module_id)
+    if await active_run(session, draft.id):
+        raise AppError("RUN_ACTIVE", "请等待当前生成或润色任务完成", 409)
     vid = draft.current_module_version_map.get(body.module_id)
     if not vid:
         raise AppError("MODULE_NOT_READY", "请先生成当前模块", 409)

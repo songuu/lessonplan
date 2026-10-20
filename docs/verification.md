@@ -143,6 +143,17 @@ Langfuse返回的JSON入队确认在HTTP200下有效，原先只解析protobuf�
 
 本轮未重新调用收费模型、核对Provider账单或验证生产容量；真实用量、模型字段、首个非空delta及层级的SDK编码由实际锁定依赖与MockTransport契约验证。已有任务不补传；内存队列在硬崩溃时可能丢诊断。计数是当前API进程状态，不是Worker全局聚合。本地日志暂未自动清理，生产数据保留与备份策略需另行设置。原有无关修改保留，未提交或推送。
 
+## 追加验收：结构化模块导航与单任务互斥（2026-10-20）
+
+修复结构化目录可跳到未解锁后序模块、旧URL终态Run覆盖当前活动Run、快速连点重复提交，以及润色会话在另一个模块生成中仍可创建的问题。目录按确认顺序解锁，已完整生成的内容可回看；任务期间旧模块只读，前序重生待确认时下游历史也可只读回看。恢复的润色候选保留，但只读或执行中不能采用。后端在Draft锁下拒绝活动任务期间新开润色，会话消息/重新生成沿用既有create_run互斥；confirm与step共享前序确认门，幂等重放保留。
+
+- 前端回归先复现5项失败，后补历史回看/恢复候选两项失败再修复；最终新增导航测试10项，前端全量8文件76项通过。TypeScript与生产构建通过，保留既有Lesson chunk体积提示。
+- 后端新增准入回归3项（queued/running两个参数场景及顺序确认）先红后绿。组合 `tests/test_workflows.py tests/test_platform.py tests/test_module_admission.py` 为14 passed（130.53秒），涵盖原结构化活动、大纲确认、版本/约束、已有会话可读、同键重放和任务结束恢复。Ruff与diff检查通过；没有改数据库schema或重新执行全后端长套件。
+- 独立9012 SQLite/mock浏览器验收使用合成教师、三模块教案 `0c2e4469-8464-4976-83ab-a92ee9e1e92b`。首模块未确认时后两项disabled；确认后仅解锁第二项；第二项运行中回到首模块，实际 `contenteditable=false`、重生/润色禁用、第三项仍锁定。直连HTTP重生和润色均409 RUN_ACTIVE，数据库该教案恰有1个活动任务。释放有截止时间的合成暂停后第二项completed，首模块版本保持，活动任务为0，编辑器与重生/润色恢复。零真实Provider调用。
+- 证据 `.cache/module-navigation-evidence.json`，截图 `.cache/module-navigation-busy.jpg`、`.cache/module-navigation-busy-footer.jpg` 和 `.cache/module-navigation-completed.jpg`。general、Python、TypeScript独立复审及历史候选门控定向复审无剩余P1/P2。
+
+本轮只更改模块交互/API准入，不改变模型请求协议、预算、断点恢复或SSE事件契约；无schema迁移、真实模型费用或生产容量验收。原有业务教案与账号不作为故障注入对象。临时验收环境完成后关闭，本机正式服务使用现有私有配置平滑重启。
+
 ## 未验证与实施取舍
 
 - 已执行真实Provider最小完整canary；尚未系统评估教学质量、成本分布与时延分布，也未验证COS网络读写。Gateway主备故障情形使用受控MockTransport验证。

@@ -89,6 +89,8 @@ export type OutlineStage = {
 export type Run = {
   id: string;
   status: string;
+  workflow_type?: string;
+  payload?: Record<string, unknown>;
   result?: Record<string, unknown>;
   error?: { message?: string } | string;
   error_message?: string;

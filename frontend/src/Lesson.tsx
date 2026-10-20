@@ -116,6 +116,8 @@ export function LessonPage() {
   runIdRef.current = runId;
   const completedRunIdRef = useRef("");
   const [run, setRun] = useState<Run | null>(null);
+  const [watchRevision, setWatchRevision] = useState(0);
+  const aiActionPending = useRef(false);
   const [reconnecting, setReconnecting] = useState(false);
   const [streams, setStreams] = useState<Record<string, string>>({});
   const [progress, setProgress] = useState("正在准备教学设计");
@@ -151,7 +153,23 @@ export function LessonPage() {
   const [reflectionLoaded, setReflectionLoaded] = useState(false);
   const module = draft?.modules?.find((m) => m.module_id === selectedId);
   const dirty = working !== base;
-  const running = !!runId && (!run || !terminal(run.status));
+  // A bookmarked terminal Run must not unlock a different active task on this draft.
+  const running =
+    (!!runId && (!run || run.id !== runId || !terminal(run.status))) ||
+    (!!draft?.active_run_id && draft.active_run_id !== run?.id);
+  const interactive = ["interactive", "interactive_step"].includes(
+    draft?.generation_mode || "",
+  );
+  const enabled = draft?.modules.filter((m) => m.enabled) || [];
+  const selectedIndex = enabled.findIndex(
+    (item) => item.module_id === selectedId,
+  );
+  const moduleReadOnly =
+    interactive &&
+    selectedIndex >= 0 &&
+    enabled
+      .slice(0, selectedIndex)
+      .some((item) => item.state?.confirmation_status !== "confirmed");
   const draftRef = useRef(draft);
   draftRef.current = draft;
   const selectedRef = useRef(selectedId);
@@ -234,6 +252,11 @@ export function LessonPage() {
         if (expectedRunId && expectedRunId !== runIdRef.current) return detail;
         setDraft(detail);
         setError("");
+        if (detail.active_run_id && detail.active_run_id !== runIdRef.current) {
+          runIdRef.current = detail.active_run_id;
+          setRunId(detail.active_run_id);
+          setRun(null);
+        }
         const target =
           selectedRef.current ||
           detail.modules?.find((m) => m.enabled)?.module_id ||
@@ -386,6 +409,7 @@ export function LessonPage() {
       runId,
       controller.signal,
       (event) => {
+        if (controller.signal.aborted || runIdRef.current !== runId) return;
         const data = event.data;
         const moduleId = String(data.module_id || selectedRef.current);
         const modules =
@@ -582,7 +606,27 @@ export function LessonPage() {
           setOutline(data.outline as OutlineStage[]);
       },
       (latest) => {
+        if (controller.signal.aborted || runIdRef.current !== runId) return;
         setRun(latest);
+        if (latest.workflow_type) {
+          const kind =
+            latest.workflow_type === "module_polish_message"
+              ? "polish"
+              : latest.workflow_type === "reflection_polish_message"
+                ? "reflection"
+                : "generation";
+          kindRef.current = kind;
+          setRunKind(kind);
+          const target = latest.payload?.module_id;
+          if (
+            kind === "generation" &&
+            !terminal(latest.status) &&
+            typeof target === "string"
+          ) {
+            setActiveModuleId(target);
+            focusGeneratingModule(target);
+          }
+        }
         if (terminal(latest.status) && !finished) {
           finished = true;
           if (latest.status === "completed")
@@ -599,14 +643,13 @@ export function LessonPage() {
         outage = value;
       },
     ).catch((e) => {
-      if (!controller.signal.aborted) {
-        setError(message(e));
-        setRun({ id: runId, status: "failed", error: message(e) });
+      if (!controller.signal.aborted && runIdRef.current === runId) {
+        setError(`${message(e)}。当前任务状态尚未确认，请重新读取后再操作。`);
         track("sse_failed", { draft_id: id, run_id: runId });
       }
     });
     return () => controller.abort();
-  }, [runId, draft?.id]);
+  }, [runId, draft?.id, watchRevision]);
   useEffect(() => {
     if (!module || outlineDirty) return;
     const canonical = (
@@ -674,8 +717,36 @@ export function LessonPage() {
     setRun(null);
     setParams({ run: result.run_id }, { replace: true });
   };
+  const moduleNavigationReason = (target: string) => {
+    if (busy) return "正在提交操作，请稍候";
+    if (running && runKind === "polish") return "请等待当前润色完成";
+    if (!interactive) return "";
+    const index = enabled.findIndex((item) => item.module_id === target);
+    const frontier = enabled.findIndex(
+      (item) => item.state?.confirmation_status !== "confirmed",
+    );
+    // Existing complete content remains readable when an upstream edit relocks progression.
+    if (
+      index >= 0 &&
+      enabled[index].current_version_id &&
+      !["outline", "outline_ready"].includes(
+        enabled[index].state?.workflow_stage || "",
+      )
+    )
+      return "";
+    if (index < 0 || (frontier >= 0 && index > frontier))
+      return "请先确认前面的模块，再继续下一步";
+    if (
+      running &&
+      target !== activeModuleId &&
+      target !== selectedId &&
+      !enabled[index].current_version_id
+    )
+      return "当前任务执行中，可回看已生成的模块";
+    return "";
+  };
   const chooseModule = (target: string) => {
-    if (!draft || busy || (running && runKind === "polish")) return;
+    if (!draft || moduleNavigationReason(target)) return;
     if (running && runKind === "generation") {
       setFollowGeneration(false);
       followGenerationRef.current = false;
@@ -688,13 +759,25 @@ export function LessonPage() {
     setOutlineDirty(false);
     setOutline([]);
   };
+  const beginAiAction = () => {
+    // React may batch two clicks before disabled renders; admit one request synchronously.
+    if (aiActionPending.current || busy || running || moduleReadOnly)
+      return false;
+    aiActionPending.current = true;
+    setBusy(true);
+    return true;
+  };
+  const endAiAction = () => {
+    aiActionPending.current = false;
+    setBusy(false);
+  };
   const versionPayload = () => ({
     expected_content_version: editBase?.contentVersion,
     expected_current_module_version_id: editBase?.moduleVersion,
     expected_module_config_version_id: editBase?.configVersion,
   });
   const save = async (content = working) => {
-    if (!draft || !module) return;
+    if (!draft || !module || busy || running || moduleReadOnly) return;
     setBusy(true);
     try {
       await patch(`/lesson-drafts/${id}/modules/${module.module_id}`, {
@@ -716,8 +799,7 @@ export function LessonPage() {
     }
   };
   const generate = async (stage?: string) => {
-    if (!module) return;
-    setBusy(true);
+    if (!module || !beginAiAction()) return;
     try {
       const result = await post<{ run_id: string }>(
         `/lesson-drafts/${id}/interactive/step`,
@@ -733,11 +815,11 @@ export function LessonPage() {
     } catch (e) {
       notify(message(e), true);
     } finally {
-      setBusy(false);
+      endAiAction();
     }
   };
   const confirm = async (isOutline = false) => {
-    if (!module) return;
+    if (!module || busy || running || moduleReadOnly) return;
     setBusy(true);
     try {
       await post(`/lesson-drafts/${id}/interactive/confirm`, {
@@ -774,8 +856,7 @@ export function LessonPage() {
     }
   };
   const beginPolish = async () => {
-    if (!module) return;
-    setBusy(true);
+    if (!module || !beginAiAction()) return;
     try {
       const session = await post<{ id: string }>("/module-polish-sessions", {
         draft_id: id,
@@ -802,13 +883,12 @@ export function LessonPage() {
     } catch (e) {
       notify(message(e), true);
     } finally {
-      setBusy(false);
+      endAiAction();
     }
   };
   const requestPolish = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!polish || !polishInput.trim()) return;
-    setBusy(true);
+    if (!polish || !polishInput.trim() || !beginAiAction()) return;
     try {
       const result = await post<{ run_id: string }>(
         `/module-polish-sessions/${polish.id}/messages`,
@@ -824,11 +904,11 @@ export function LessonPage() {
     } catch (e) {
       notify(message(e), true);
     } finally {
-      setBusy(false);
+      endAiAction();
     }
   };
   const adoptPolish = () => {
-    if (!polish?.candidate) return;
+    if (!polish?.candidate || busy || running || moduleReadOnly) return;
     try {
       const value = polish.selection
         ? applySelectionCandidate(
@@ -945,10 +1025,6 @@ export function LessonPage() {
         </Link>
       </div>
     );
-  const interactive =
-    draft.generation_mode === "interactive" ||
-    draft.generation_mode === "interactive_step";
-  const enabled = draft.modules.filter((m) => m.enabled);
   const confirmed = enabled.filter(
     (m) => m.state?.confirmation_status === "confirmed",
   ).length;
@@ -1064,7 +1140,11 @@ export function LessonPage() {
           {error}
           <button
             className="text-button"
-            onClick={() => void load().catch(() => {})}
+            onClick={() =>
+              void load()
+                .then(() => setWatchRevision((value) => value + 1))
+                .catch(() => {})
+            }
           >
             重新读取
           </button>
@@ -1087,6 +1167,9 @@ export function LessonPage() {
               {activeStage
                 ? `当前环节：${activeStage}`
                 : "生成内容仅作临时展示，完成后以正式版本为准。"}
+              {interactive &&
+                runKind === "generation" &&
+                " 可回看已生成模块；任务结束后可重新生成或润色。"}
             </small>
             {runKind === "generation" && (
               <div className="generation-count">
@@ -1188,7 +1271,8 @@ export function LessonPage() {
             {enabled.map((m, i) => (
               <button
                 key={m.module_id}
-                disabled={busy || (running && runKind === "polish")}
+                disabled={!!moduleNavigationReason(m.module_id)}
+                title={moduleNavigationReason(m.module_id) || undefined}
                 className={selectedId === m.module_id ? "selected" : ""}
                 aria-current={selectedId === m.module_id ? "step" : undefined}
                 onClick={() => chooseModule(m.module_id)}
@@ -1289,6 +1373,11 @@ export function LessonPage() {
                   上游内容已修改，请检查本模块是否需要调整。正文已保留，系统不会自动改写。
                 </div>
               )}
+              {moduleReadOnly && (
+                <div className="notice">
+                  当前仅回看已生成内容。请先确认前面的模块，再编辑、重新生成或润色本模块。
+                </div>
+              )}
               {stream !== undefined && runKind === "generation" ? (
                 <div className="stream-content">
                   <div className="stream-label">
@@ -1333,7 +1422,7 @@ export function LessonPage() {
                     setOutline(value);
                     setOutlineDirty(true);
                   }}
-                  disabled={running || busy}
+                  disabled={running || busy || moduleReadOnly}
                   total={draft.total_duration_min}
                 />
               ) : !working && !module.current_version_id ? (
@@ -1360,7 +1449,11 @@ export function LessonPage() {
                   value={working}
                   onChange={setWorking}
                   onSelection={setSelection}
-                  readonly={busy || (running && runKind === "generation")}
+                  readonly={
+                    busy ||
+                    moduleReadOnly ||
+                    (running && runKind === "generation")
+                  }
                 />
               )}
               <div className="module-actions">
@@ -1392,7 +1485,13 @@ export function LessonPage() {
                   )}
                   <button
                     className="button secondary small"
-                    disabled={busy || running || !working || outlinePhase}
+                    disabled={
+                      busy ||
+                      running ||
+                      moduleReadOnly ||
+                      !working ||
+                      outlinePhase
+                    }
                     onClick={beginPolish}
                   >
                     <Sparkles size={15} />
@@ -1400,7 +1499,13 @@ export function LessonPage() {
                   </button>
                   <button
                     className="button primary small"
-                    disabled={busy || running || !dirty || outlinePhase}
+                    disabled={
+                      busy ||
+                      running ||
+                      moduleReadOnly ||
+                      !dirty ||
+                      outlinePhase
+                    }
                     onClick={() => void save()}
                   >
                     <Save size={15} />
@@ -1419,7 +1524,7 @@ export function LessonPage() {
                     {module.current_version_id && (
                       <button
                         className="button secondary small"
-                        disabled={busy || running || dirty}
+                        disabled={busy || running || moduleReadOnly || dirty}
                         onClick={() =>
                           void generate(
                             isProcess
@@ -1440,6 +1545,7 @@ export function LessonPage() {
                         disabled={
                           busy ||
                           running ||
+                          moduleReadOnly ||
                           !outline.length ||
                           outline.some(
                             (s) => !s.title.trim() || s.duration_min <= 0,
@@ -1452,7 +1558,7 @@ export function LessonPage() {
                     ) : outlineConfirmed && isProcess && phase === "outline" ? (
                       <button
                         className="button primary small"
-                        disabled={busy || running}
+                        disabled={busy || running || moduleReadOnly}
                         onClick={() => void generate("activities")}
                       >
                         生成课堂活动 <ArrowRight size={15} />
@@ -1463,6 +1569,7 @@ export function LessonPage() {
                         disabled={
                           busy ||
                           running ||
+                          moduleReadOnly ||
                           dirty ||
                           !module.current_version_id ||
                           module.state?.confirmation_status === "confirmed"
@@ -1567,6 +1674,7 @@ export function LessonPage() {
                   </button>
                   <button
                     className="button primary small"
+                    disabled={busy || running || moduleReadOnly}
                     onClick={adoptPolish}
                   >
                     <Check size={14} />
@@ -1592,7 +1700,9 @@ export function LessonPage() {
             />
             <button
               className="button primary small"
-              disabled={busy || running || !polishInput.trim()}
+              disabled={
+                busy || running || moduleReadOnly || !polishInput.trim()
+              }
             >
               <Send size={15} />
               发送要求
@@ -1625,7 +1735,10 @@ export function LessonPage() {
                     <button
                       className="button secondary small"
                       disabled={
-                        busy || running || v.id === module?.current_version_id
+                        busy ||
+                        running ||
+                        moduleReadOnly ||
+                        v.id === module?.current_version_id
                       }
                       onClick={async () => {
                         setBusy(true);
