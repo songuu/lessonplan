@@ -17,6 +17,7 @@ MESSAGES = {
     "WORKER_LEASE_EXPIRED": "执行进程租约已过期，系统正在恢复任务。",
     "WORKER_RECOVERY_EXHAUSTED": "任务自动恢复次数已耗尽，请人工处理。",
     "QUEUE_BACKLOG": "任务排队时间超过预期，请检查队列与执行进程。",
+    "LLM_OUTCOME_UNKNOWN": "模型调用结果尚未确认，已停止自动重发以避免重复计费，请核对服务商记录。",
 }
 TRANSIENT_CODES = ("DISPATCH_RETRY", "WORKER_LEASE_EXPIRED", "QUEUE_BACKLOG")
 ALERT_SCAN_BATCH = 100

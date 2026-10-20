@@ -179,9 +179,18 @@ async def start(body, request, user, session, mode, key):
         return {"data": {"draft_id": draft.id, "run_id": run.id}}
     modules = normalize_modules(body.modules if body.modules is not None else user.preferences.get("modules"))
     from app.services.knowledge import freeze_context
-    knowledge_ids, knowledge_context = await freeze_context(session, user, body.knowledge_base_ids,
-        body.topic + " " + body.requirements, max_chunks=request.app.state.settings.knowledge_search_max_chunks)
     did, cid = uid(), uid()
+    observer = request.app.state.observer
+    with observer.span("lesson.prepare", metadata={"workflow": "lesson_prepare",
+            "thread_id": observer.thread_id_for(did, did, user.tenant_id)}) as preparation:
+        from app.ai.observability import step
+        with step("knowledge.search", run_type="retriever", method="lexical_bm25") as retrieval:
+            knowledge_ids, knowledge_context = await freeze_context(session, user, body.knowledge_base_ids,
+                body.topic + " " + body.requirements, max_chunks=request.app.state.settings.knowledge_search_max_chunks)
+            if retrieval is not None:
+                retrieval.set(hit_count=len(knowledge_context), frozen_count=len(knowledge_context))
+        # Preparation is a real API phase; a later Worker reads this frozen snapshot.
+        preparation.set(outcome="prepared")
     draft = Draft(id=did, user_id=user.id, tenant_id=user.tenant_id, request_id=body.request_id,
         input_hash=stable_hash, topic=body.topic.strip(), school_stage=payload["school_stage"], grade=payload["grade"],
         subject=payload["subject"], lesson_type=payload["lesson_type"], total_duration_min=body.total_duration_min,

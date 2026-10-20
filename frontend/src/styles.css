@@ -4022,6 +4022,240 @@ td {
 .recovery-page {
   max-width: 1600px;
 }
+.admin-execution-log-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 14px 18px;
+  color: var(--green);
+  font-size: 13px;
+  white-space: nowrap;
+}
+.admin-execution-log-tab:hover {
+  background: #eef1e6;
+}
+.execution-observability-status {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 20px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--paper);
+  margin-bottom: 24px;
+  font-size: 12px;
+}
+.execution-observability-status b {
+  color: var(--green);
+  font-weight: 500;
+}
+.execution-observability-status p {
+  margin: 5px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.6;
+}
+.execution-platform-dot,
+.execution-log-level {
+  width: 7px;
+  height: 7px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: #b0b4a4;
+}
+.execution-platform-dot.is-enabled,
+.execution-log-level-info {
+  background: #648b5d;
+}
+.execution-project {
+  margin-left: auto;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.execution-log-filters {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 14px;
+  padding: 20px 24px;
+  border-bottom: 1px solid var(--line);
+}
+.execution-log-filters label {
+  font-size: 11px;
+  flex: 1 1 130px;
+}
+.execution-log-filters input,
+.execution-log-filters select {
+  font-size: 12px;
+  padding: 10px 12px;
+  margin-top: 7px;
+}
+.execution-log-filters .execution-log-run-filter {
+  flex: 2 1 230px;
+}
+.execution-log-run-filter > div {
+  position: relative;
+}
+.execution-log-run-filter svg {
+  position: absolute;
+  left: 11px;
+  top: 20px;
+  color: var(--muted);
+}
+.execution-log-run-filter input {
+  padding-left: 34px;
+}
+.execution-log-filters .button {
+  min-height: 40px;
+  font-size: 12px;
+}
+.execution-log-timeline {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.execution-log-timeline li {
+  position: relative;
+  display: grid;
+  grid-template-columns: 8px 160px minmax(100px, 1fr) auto;
+  align-items: start;
+  gap: 18px;
+  padding: 20px 24px;
+  border-bottom: 1px solid var(--line);
+}
+.execution-log-level {
+  margin-top: 6px;
+}
+.execution-log-level-warning {
+  background: #b99651;
+}
+.execution-log-level-error {
+  background: #bd6d59;
+}
+.execution-logs-page .recovery-state-interrupted,
+.execution-log-detail .recovery-state-interrupted {
+  color: #8b682f;
+  background: #f3eddf;
+}
+.execution-log-time,
+.execution-log-outcome {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  font-size: 11px;
+}
+.execution-log-time small,
+.execution-log-outcome small {
+  font-size: 10px;
+  color: var(--muted);
+}
+.execution-log-summary .text-button {
+  font-size: 13px;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+.execution-log-summary p {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 14px;
+  margin: 7px 0 0;
+  font-size: 10px;
+  color: var(--muted);
+}
+.execution-log-summary code {
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+.execution-log-outcome {
+  align-items: flex-end;
+}
+.execution-log-paging {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 14px;
+  padding: 15px 24px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.execution-log-paging .button {
+  padding: 8px 13px;
+  font-size: 12px;
+}
+.execution-detail-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 22px;
+}
+.execution-detail-heading .eyebrow {
+  font-size: 10px;
+}
+.execution-detail-heading h3 {
+  margin: 8px 0 0;
+  color: var(--green);
+  font-size: 18px;
+  overflow-wrap: anywhere;
+}
+.execution-log-detail .recovery-facts {
+  margin-bottom: 24px;
+}
+.execution-privacy-note {
+  display: flex;
+  gap: 7px;
+  align-items: center;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.7;
+  margin: 22px 0 0;
+}
+.execution-privacy-note svg {
+  flex-shrink: 0;
+}
+@media (max-width: 900px) {
+  .execution-log-timeline li {
+    grid-template-columns: 8px minmax(100px, 1fr) auto;
+    gap: 12px;
+    padding: 16px 18px;
+  }
+  .execution-log-time {
+    grid-column: 2 / 4;
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+  .execution-log-level {
+    grid-row: 1 / 3;
+  }
+  .execution-log-summary {
+    grid-column: 2;
+  }
+  .execution-log-outcome {
+    grid-column: 3;
+  }
+  .execution-observability-status {
+    flex-wrap: wrap;
+  }
+}
+@media (max-width: 560px) {
+  .execution-log-outcome {
+    grid-column: 2 / 4;
+    align-items: flex-start;
+    flex-direction: row;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  .execution-log-summary {
+    grid-column: 2 / 4;
+  }
+  .execution-project {
+    margin-left: 19px;
+  }
+  .execution-log-filters {
+    padding: 18px;
+  }
+}
 .recovery-live-bar {
   display: flex;
   gap: 22px;

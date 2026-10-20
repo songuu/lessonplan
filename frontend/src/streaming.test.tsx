@@ -93,6 +93,30 @@ async function click(text: string) {
 }
 
 it.each(["one_click", "interactive"])(
+  "%s explains response replay without marking an unvalidated module complete",
+  async (mode) => {
+    draft.generation_mode = mode;
+    await mount();
+    await emit("module_progress", {
+      module_id: "m1",
+      phase: "llm_response_replayed",
+    });
+    const banner = host.querySelector(".generation-banner")?.textContent;
+    expect(banner).toContain("已复用保存的模型响应，继续校验与保存");
+    expect(banner).not.toContain("已生成 1/2 个模块");
+    expect(host.querySelector(".rich-editor")).toBeNull();
+  },
+);
+
+it("describes first dispatch without claiming that it was a retry", async () => {
+  await mount();
+  await emit("module_progress", { phase: "dispatch_published" });
+  const banner = host.querySelector(".generation-banner")?.textContent;
+  expect(banner).toContain("任务已投递，正在等待开始生成");
+  expect(banner).not.toContain("重新投递");
+});
+
+it.each(["one_click", "interactive"])(
   "%s follows the generating module and renders deltas before completion",
   async (mode) => {
     draft.generation_mode = mode;

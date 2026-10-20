@@ -1,4 +1,4 @@
-# Reuse rag-nextjs's PostgreSQL 17 on 127.0.0.1:5432.
+# Reuse rag-nextjs's PostgreSQL 17; this Windows host accesses it via 127.0.0.1:15432.
 # Only this project's Redis is managed by this local development topology.
 name: lesson-assistant-local
 services:

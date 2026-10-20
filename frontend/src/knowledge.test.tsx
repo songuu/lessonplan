@@ -525,7 +525,7 @@ describe("lesson knowledge references", () => {
     await act(async () =>
       send("module_progress", { phase: "dispatch_published", attempt: 2 }),
     );
-    expect(host.textContent).toContain("任务已重新投递");
+    expect(host.textContent).toContain("任务已投递");
   });
   it("keeps an activity checkpoint generating until the entire module finishes", async () => {
     const send = await mountGeneration(["teaching_process"]);

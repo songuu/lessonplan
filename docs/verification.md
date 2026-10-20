@@ -30,7 +30,7 @@
 
 code-reviewer、python-reviewer、typescript-reviewer、security-reviewer分别审查。已修复Run/Outbox及Snapshot/Export FK写入顺序、锁顺序、跨workflow幂等键、超时语义、取消关联状态、outline重确认、下游失效、丢失job恢复、专用模型路由、JSON截断、文件提交补偿、样本统计隔离，以及前端3P1+2P2编辑/异步竞态。安全8项回归和对应独立复核通过。最后的SSE正常EOF重连埋点遗漏通过先红后绿修复，终态EOF不误报，已纳入最终16项前端测试，独立定向5/5复核通过。当前没有未闭合finding，未发现可操作问题；下面仍保留验证边界。
 
-## 最终本地运行
+## 既有本地运行（2026-10-16记录）
 
 最终前后端在 `http://127.0.0.1:8000` 运行。当前已切换 Docker PG17 + Docker Redis8.4 + ARQ + 真实模型 `deepseek-flash`；`/health` 为 `healthy`、`arq`、`lesson_plan_ai`，PG、Redis 及七类独立 Worker 均通过检查。原 SQLite 模式账号与教案保留。服务为本机回环监听，不是外部发布；日常启动见[本地流程](本地Docker完整流程.md)。
 
@@ -93,6 +93,55 @@ API在Worker启动前71ms返回queued任务；同请求复用Run。SSE接收事�
 本轮证据目录 `.cache/page-demo/`：上传/检索/知识选择/冻结来源/真实重试/正文采用/硬停止前/恢复后完成截图，`quality-before.json`、`quality-after.json`、`crash-before.json`、`crash-after.json`、`kill-receipt.json`、`sse-recovery.json`。`08-checkpoints-restored.png`截取时两个模块已恢复并继续原模块进度，未保留下短暂的“已恢复”提示；恢复事件本身见持久phase与SSE记录。质量与恢复的观察暂停均到时自动继续，此后写入release文件不作为任务推进的必要条件。
 
 演示后已优雅停止全部临时进程，恢复普通 `scripts/run_local.py` 入口，并实际核验one-click命令行不含page-demo。最终健康检查healthy，PG/Redis及七类Worker均正常；知识库、两份教案及演示证据保留。
+
+## 追加验收：模型调用回执与恢复重放（2026-10-20）
+
+- 新增0005 `llm_invocations`：请求前提交唯一意图，完整模型原文及hash独立短事务提交；最终 `applied` 与业务结果同事务。恢复沿用原调用身份、累计调用预算及质量尝试，覆盖一键批量、结构化、蓝图、活动、润色和审查。
+- `tests/test_invocation_integration.py` 使用真实服务事务/租约及受控CountingGateway，覆盖响应回执已提交、首模块断点前、业务Commit前、Commit成功但确认丢失四个窗口：总模型调用均为1，最终7个正式版本、唯一成功终态、事件序号连续。第五项在传输中断且无完整回执时，恢复为 `LLM_OUTCOME_UNKNOWN`，不发第二次请求并留下持久告警。这里使用取消异常模拟进程突然退出，不声称执行了本轮真实Provider或OS硬停止。
+- 存储测试覆盖并发领取、回执不可变、上下文隔离、旧执行者只能归档原请求、当前业务fencing及事务回滚；管理API教师403，标量投影不读取/返回模型正文、Prompt或凭证。前端展示回执状态/指纹/用量/时间，缺少回执的旧接口兼容，SSE重放阶段不会误标模块完成。
+- 独立复审发现“一键首批质量失败、最后一次修正成功并保存、模块断点前崩溃”时旧batch覆写新质量结果。新增精确回归先红后绿修复；恢复采用原修正回执、0新模型请求，真实失败重试额度不放宽。general/Python两位审查者复核关闭，前端TypeScript独立审查通过，无未关闭P1/P2。
+- 后端全量 `216 passed, 7 skipped`（459.78秒）；该全量收集后新增上述崩溃回归，最终版本5个回执专项文件 `40 passed`（63.88秒）。外部数据库测试在默认全量中按opt-in跳过。前端54/54、类型检查、生产构建、Ruff、37受控资产和 `git diff --check` 通过；未修改依赖，既有Lesson大包体提示仍存在。
+- 最后核对用量发现Gateway原先将Provider缺失usage填为0，与新增管理页“实际用量”的语义不符。补充JSON/SSE共8项先红后绿回归，改为只保留Provider明确上报的非bool、非负整数；缺失显示未知，真实0保留，usage不能覆盖请求元数据。该修复后的Gateway/原Runtime/回执Runtime共 `47 passed`（1.05秒），证据 `final-gateway-tests.xml`；两位审查者再次定向复核通过。正式CallLog旧整数字段保持缺失默认0的既有兼容行为，新回执元数据不会伪造未知值。
+- 另用已缓存的原生PostgreSQL16.15启动全新随机集群，仅监听127.0.0.1:16432；新库 `lesson_recovery_verify_5cc8f2f3e9f04465a3e088a3acc9f16a` 中完成升级head、无漂移检查、降至0004、再次升级与检查，全部返回0。真实PG调用并发领取/重复回执、业务回滚/新epoch重放及原有投递/告警并发共4/4通过（0.74秒）。按新目录、PID文件、启动时间及 `SHOW data_directory` 核验后精确停止，PID文件已移除，所有证据保留在 `.cache/llm-receipts-20261020-a61d/native-pg-5cc8f2f3e9f04465a3e088a3acc9f16a/report.json`。这是独立PG16验证，不代表现有Docker PG17业务库已升级。前两轮仅受沙箱令牌与Windows继承管道影响，未执行迁移；最终启动脚本经复审修正为文件日志，并安全停止每个已启动的自建实例。
+- 当前Docker Desktop启动因Secrets Engine的旧 `engine.sock` 无法访问/重命名失败，Docker引擎管道不可用，127.0.0.1:5432拒绝连接。本轮未迁移 `lesson_assistant`、未改 `.env`、未重建Docker容器或卷，API与Worker未重启。0005已具备迁移源文件；业务库应用需在Docker恢复后核对无活动任务、备份并升级。本轮未恢复DBX或浏览器自动操作。
+
+设计、回执状态、迟到响应权限与可在DBX执行的只读SQL见[模型调用回执与恢复](模型调用回执与恢复.md)。完整回执已经可靠提交才能保证重放；模型已完成但所有可靠存储均无回执时，当前Provider无已验证的幂等/结果查询接口，因此停止自动重复付费调用。该边界不能由ARQ、Redis锁或单个本地事务消除。
+
+### 同日恢复执行：业务库迁移与真实模型完整流程
+
+- 用户启动Docker后，原PG17容器与Redis均健康；宿主5432仍拒绝连接。检查确认Windows排除端口区间5405–5504包含5432，独占bind返回10013。已先备份 `lesson_assistant`，确认0活动生成任务和0执行中数据库查询；一次原容器短暂重启未恢复端口，随后采用本项目独立访问桥 `127.0.0.1:15432 → rag-system-postgres-1:5432`。桥为非root、只读、无数据卷、固定上游及回环发布；Docker中原PG集群标识与TCP连接精确相同。`.env`仅改DATABASE_URL端口5432→15432，逆改该一处后与原文件SHA完全一致；模型、JWT及其他设置保持不变。
+- 迁移前备份 `var/backups/llm-receipts-before-0005-20261020T023254Z-91cd4908.dump`（1,863,956字节），SHA及 `pg_restore --list` 校验通过。复审后的脚本持有普通启动器同一OS锁，确认8000无监听、0活动任务、原库0004及同集群后，完成0004→0005与Alembic无漂移检查；25张原业务表、34,257行的原列计数/hash全部保持不变。没有对业务库做降级或在 `rag_system` 写入数据。
+- 普通 `scripts/run_local.py` 已恢复运行，实例 `da9cdea69a5d4bd8b521fa17f5050ae7`。最终 `/health` 为healthy/arq/lesson_plan_ai，PG17.11、Redis与七类独立Worker均健康。端口桥容器 `lesson-assistant-pg-access-91cd4908` 随Docker自动恢复；当前DBX应连接127.0.0.1:15432，数据库及认证沿用原lesson_assistant连接。
+- `scripts/check_local_flow.py --real-model` 完整通过：11个前台运行、12次真实模型调用，两份七模块教案及合法Word下载（39,001/42,266字节）。一键1,008条持久事件；游标6断开时仍running且正式版本0，PG离线序号7→75，重连连续补齐；实际收到Redis changed通知。证据 `.cache/local-real-flow/75a60dbde01c4e219029fc5c7fef393a/evidence.json`。
+- 独立PG回读本次合成教师共12个运行全部完成（含额外后台/收尾运行），12条真实调用日志与12条 `applied` 回执一一计数一致，原始响应hash非空且保存时间不晚于应用时间；每个Run唯一终态、事件序列连续。12次连续只读采样与最终回读确认同一调用 `5acc1783-0918-4597-ae81-1c35f1782615` 实际经历 `in_flight → response_saved → applied`。本轮未硬停止Worker，也未恢复DBX/浏览器自动操作；崩溃窗口证明仍以上述已通过专项测试及独立PG事务验证为准。
+- 本轮迁移、端口身份、原数据hash、启动健康及最终回执证据在 `.cache/llm-receipts-main-20261020T023254Z-91cd4908/`，最终摘要为 `complete-flow.json`。新增端口桥经general/TypeScript复审及32MiB真实TCP慢读验证，迁移脚本经Python两次复审。保留已有无关修改，未提交、推送或写全局学习记录。
+
+## 追加验收：Langfuse 开源自托管与 /admin 执行日志（2026-10-20）
+
+根据用户的平台修正，使用开源自托管Langfuse，现行方案为[接入方案v2](plans/2026-10-20-langfuse-observability.md)。运行依赖不包含LangSmith、LangChain或LangGraph。独立Compose项目 `lesson-assistant-observability` 包含Web/Worker、PG、ClickHouse、Redis、MinIO；只公开127.0.0.1:3100，未重建或改写已有业务/其他项目容器。Langfuse Web现场版本4.64.0，客户端依赖锁定4.18.0。
+
+| 验证 | 实际结果 |
+|---|---|
+| 后端全量 | `.venv/Scripts/python.exe -m pytest -q --basetemp .tmp/pytest-langfuse-final`：289 passed、7 skipped，677.85秒；跳过项需显式独立外部环境 |
+| 最后修复定向 | observability/core、SDK、exporter、Gateway与新PG测试：39 passed、1 skipped；SDK JSON确认兼容和Gateway未知结果分类在修复前先复现失败 |
+| 真实PG并发 | 新建专用 `lesson_recovery_verify_logs_*` 库；移除锁时准确复现“较晚writer越过未提交游标”，恢复实现后cursor/dispatch/invocation合计5 passed（1.10秒）；临时库已清理 |
+| 迁移 | 隔离SQLite与PG升级、检查、降至0005、再升级通过；实际业务库备份后0005→0006，`alembic check`无漂移 |
+| 前端 | `npm test -- --run`：7文件66项通过；`npm run build`和TypeScript通过，保留既有Lesson大chunk提示 |
+| 静态验证 | `ruff check app tests scripts`、`git diff --check`、37份受控资产、业务与Langfuse Compose quiet检查通过 |
+| 自托管真实canary | `scripts/check_langfuse_flow.py --live`通过OTLP发送并通过v2 Observations API读回3个观察，两个子节点parent ID一致；零模型请求 |
+| 完整合成业务链路 | 独立9011 SQLite/mock服务，Run `546ac9bd-4cc0-491b-935d-c85e20b8f40e`最终completed；40条本地步骤日志、20个Langfuse观察，远端根状态completed，零GENERATION/真实Provider请求 |
+| 浏览器 | 验证/admin入口、空日志、按Run与completed筛选、增量分页、详情、Langfuse 32hex复制、恢复深链接自动打开对应任务；验收截图 `.cache/observability-admin.jpg` |
+| 本机运行 | 优雅重启本项目API与七类Worker，`/health`200 healthy，`/admin/observability`已启用且configured，本地writer运行正常，管理员日志API200，未登录401 |
+
+Langfuse返回的JSON入队确认在HTTP200下有效，原先只解析protobuf会错误重试；现在两种格式均支持，仍检查部分拒绝、响应大小和固定超时。Web显式 `HOSTNAME=0.0.0.0`，解决仅绑定容器hostname时回环健康检查拒绝的问题；宿主暴露仍是127.0.0.1。日志根步骤结束时以已提交Run终态判断成功，无法确认则interrupted；质量结果、传输结果、已知/未知或部分token与重放分开记录。PG日志写入的500ms事务锁仅作用诊断事务，用于保证sequence顺序与提交顺序一致。
+
+性能开关对照为进程内微基准：相同1ms合成工作，每轮200个执行、5轮中位数，保留相同本地元数据sink；远端关闭1.655ms/执行、远端开启真实OTLP编码+MockTransport确认1.675ms/执行，增量0.020ms。它不包含业务数据库、外部网络、真实模型，不是端到端容量或生产时延证明。安全证据 `.cache/observability-benchmark.json`。
+
+本机私有初始化配置为 `.cache/langfuse.env` 和 `.cache/langfuse-app.env`，均被git忽略且未打印密钥。没有改写用户 `.env`；当前API/全部Worker通过进程环境加载后者。后续重启需按[部署说明](Langfuse自托管部署.md)加载相同配置，或由用户补入 `.env`。业务备份 `.cache/backups/lesson-assistant-before-0006-20261020T093809Z.dump`（2,113,064字节，SHA256 `709e53eddb6a4a47d3d77cd39ee49fe7b2e2608e538536a361901a847132182d`）包含私有业务数据，只保存在忽略目录。初始管理员密码只在私有初始化配置中。
+
+纯合成远端证据 `.cache/langfuse-verification.json`；完整mock链路 `.cache/observability-ui-verification.json`；本机运行只读回查 `.cache/observability-runtime-verification.json`；真实PG RED/GREEN与迁移 `.cache/execution-log-pg-20261020/evidence.json`。Python/TypeScript/安全/general独立审查及最后定向复审无剩余可行动P1/P2。临时浏览器CLI在此Windows环境守护进程启动失败，改用内置浏览器完成实际页面验收；没有把CLI失败当成产品故障。
+
+本轮未重新调用收费模型、核对Provider账单或验证生产容量；真实用量、模型字段、首个非空delta及层级的SDK编码由实际锁定依赖与MockTransport契约验证。已有任务不补传；内存队列在硬崩溃时可能丢诊断。计数是当前API进程状态，不是Worker全局聚合。本地日志暂未自动清理，生产数据保留与备份策略需另行设置。原有无关修改保留，未提交或推送。
 
 ## 未验证与实施取舍
 

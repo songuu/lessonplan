@@ -200,6 +200,37 @@ class RunCheckpoint(IdentityMixin, Base):
     __table_args__ = (UniqueConstraint("run_id", "checkpoint_key", name="uq_run_checkpoint_key"),)
 
 
+class LLMInvocation(IdentityMixin, Base):
+    __tablename__ = "llm_invocations"
+    run_id: Mapped[str] = mapped_column(ForeignKey("ai_generation_runs.id"), index=True)
+    invocation_key: Mapped[str] = mapped_column(String(64), unique=True)
+    step_key: Mapped[str] = mapped_column(String(200))
+    attempt: Mapped[int] = mapped_column(Integer)
+    context_fingerprint: Mapped[str] = mapped_column(String(64))
+    request_hash: Mapped[str] = mapped_column(String(64))
+    call_id: Mapped[str] = mapped_column(String(80))
+    call_index: Mapped[int] = mapped_column(Integer)
+    module_ids: Mapped[list] = mapped_column(JSON, default=list)
+    route: Mapped[str] = mapped_column(String(60))
+    status: Mapped[str] = mapped_column(String(30), default="in_flight", index=True)
+    capture_epoch: Mapped[int] = mapped_column(Integer)
+    capture_owner: Mapped[str] = mapped_column(String(36))
+    response_body: Mapped[str | None] = mapped_column(Text, nullable=True)
+    response_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    response_log: Mapped[dict] = mapped_column(JSON, default=dict)
+    error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    response_saved_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    applied_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    __table_args__ = (
+        UniqueConstraint("run_id", "step_key", "attempt", name="uq_llm_invocation_step_attempt"),
+        UniqueConstraint("run_id", "call_id", name="uq_llm_invocation_call"),
+        CheckConstraint("attempt >= 1 AND call_index >= 1 AND capture_epoch >= 0", name="ck_llm_invocation_counts"),
+        CheckConstraint("status IN ('in_flight', 'response_saved', 'applied', 'failed', 'outcome_unknown')", name="ck_llm_invocation_status"),
+        CheckConstraint("status NOT IN ('response_saved', 'applied') OR (response_body IS NOT NULL AND response_hash IS NOT NULL)",
+            name="ck_llm_invocation_response"),
+    )
+
+
 class KnowledgeBase(IdentityMixin, Base):
     __tablename__ = "knowledge_bases"
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
@@ -425,3 +456,35 @@ class AnalyticsEvent(IdentityMixin, Base):
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
     event_name: Mapped[str] = mapped_column(String(100), index=True)
     properties: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+
+
+class ExecutionLog(Base):
+    """Append-only diagnostic events, independent of worker ownership and business commits."""
+
+    __tablename__ = "ai_execution_logs"
+
+    sequence: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True)
+    event_id: Mapped[str] = mapped_column(String(36), unique=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("ai_generation_runs.id"))
+    execution_epoch: Mapped[int] = mapped_column(Integer)
+    trace_id: Mapped[str] = mapped_column(String(36), index=True)
+    span_id: Mapped[str] = mapped_column(String(36))
+    parent_span_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    phase: Mapped[str] = mapped_column(String(10))
+    name: Mapped[str] = mapped_column(String(120))
+    run_type: Mapped[str] = mapped_column(String(20))
+    level: Mapped[str] = mapped_column(String(10))
+    status: Mapped[str] = mapped_column(String(20))
+    started_at: Mapped[datetime] = mapped_column(UTCDateTime())
+    ended_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    elapsed_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, index=True)
+    __table_args__ = (
+        Index("ix_execution_logs_run_sequence", "run_id", "sequence"),
+        CheckConstraint("execution_epoch >= 0 AND (elapsed_ms IS NULL OR elapsed_ms >= 0)", name="ck_execution_log_counts"),
+        CheckConstraint("phase IN ('start', 'end', 'event')", name="ck_execution_log_phase"),
+        CheckConstraint("level IN ('info', 'warning', 'error')", name="ck_execution_log_level"),
+        CheckConstraint("status IN ('running', 'completed', 'failed', 'cancelled', 'lease_lost', 'interrupted')", name="ck_execution_log_status"),
+        {"sqlite_autoincrement": True},
+    )

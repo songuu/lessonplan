@@ -1477,6 +1477,9 @@ export function AdminPage() {
             {label}
           </button>
         ))}
+        <Link className="admin-execution-log-tab" to="/admin/execution-logs">
+          执行日志 <ArrowUpRight size={14} />
+        </Link>
       </div>
       {loading ? (
         <Spinner />

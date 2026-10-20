@@ -456,9 +456,10 @@ export function LessonPage() {
             direct_generation_fallback_to_batches: "正在按模块重新生成",
             worker_recovering: "正在恢复备课任务，已保存的内容会继续保留",
             checkpoint_restored: "已恢复完成的教学内容，继续准备剩余部分",
+            llm_response_replayed: "已复用保存的模型响应，继续校验与保存",
             dispatch_retry_scheduled:
               "暂时无法投递任务，正在等待自动重试，已保存的内容会保留",
-            dispatch_published: "任务已重新投递，正在等待开始生成",
+            dispatch_published: "任务已投递，正在等待开始生成",
           };
           const code = String(
             data.phase || data.status || data.stage || data.message || "",

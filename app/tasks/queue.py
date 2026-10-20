@@ -293,6 +293,8 @@ class Dispatcher:
 
     async def _execute(self, run_id, expected_epoch=0):
         executor = WorkflowExecutor(self.app)
+        trace_context = None
+        execution_span = None
         try:
             async with self.app.state.db.session_factory() as session:
                 run = await session.get(Run, run_id)
@@ -306,6 +308,11 @@ class Dispatcher:
             # A deadline must not split COMMIT and publishing its owner token in this process.
             if not await executor.claim(run_id, expected_epoch):
                 return
+            observer = getattr(self.app.state, "observer", None)
+            if observer is not None:
+                trace_context = observer.execution(run_id, expected_epoch, draft_id=run.draft_id,
+                    tenant_id=run.tenant_id, workflow=run.workflow_type)
+                execution_span = trace_context.__enter__()
             async with self.app.state.db.session_factory() as session:
                 run = await session.get(Run, run_id)
                 elapsed = max(0, ((await database_now(session)) - run.started_at).total_seconds())
@@ -316,14 +323,39 @@ class Dispatcher:
             async with asyncio.timeout(remaining):
                 await executor.execute(run_id, expected_epoch)
         except LeaseLost:
+            if execution_span is not None:
+                execution_span.set(status="lease_lost", error_code="EXECUTION_LEASE_LOST")
             return
         except TimeoutError:
+            if execution_span is not None:
+                execution_span.fail("WORKFLOW_TIMEOUT")
             await executor.fail(run_id, "WORKFLOW_TIMEOUT", "生成超过时间预算，请重试")
         except asyncio.CancelledError:
+            if execution_span is not None:
+                execution_span.set(status="lease_lost" if executor.lease_lost else "cancelled")
             if executor.lease_lost:
                 return
             await executor.abandon()
             raise
+        finally:
+            if execution_span is not None:
+                if execution_span.status == "running":
+                    execution_span.set(status="interrupted", business_outcome="unknown")
+                # Read committed facts only; diagnostics must never extend a failed transaction.
+                try:
+                    async with asyncio.timeout(.2), self.app.state.db.session_factory() as session:
+                        observed_run = await session.get(Run, run_id)
+                        if observed_run and observed_run.execution_epoch == expected_epoch:
+                            if observed_run.status in {"completed", "failed", "cancelled"}:
+                                execution_span.set(status=observed_run.status,
+                                    business_outcome=observed_run.status, error_code=observed_run.error_code)
+                        elif observed_run:
+                            execution_span.set(status="lease_lost")
+                except Exception:
+                    execution_span.set(status="interrupted", business_outcome="unknown",
+                        error_code="EXECUTION_RESULT_UNAVAILABLE")
+                finally:
+                    trace_context.__exit__(None, None, None)
 
     async def recover_run(self, run_id, *, expected_epoch=None, queued_job_lost=False):
         exhausted_epoch = None

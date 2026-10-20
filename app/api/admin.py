@@ -14,6 +14,7 @@ from app.db.models import (
     Event,
     Export,
     Issue,
+    LLMInvocation,
     Outbox,
     RecoveryAlert,
     Run,
@@ -243,6 +244,19 @@ async def recovery_run_detail(run_id: str, request: Request, user: Admin, sessio
         .order_by(RecoveryAlert.last_seen_at.desc()))).all()
     settings = request.app.state.settings
     elapsed = max(0, ((run.finished_at or moment) - run.started_at).total_seconds()) if run.started_at else 0
+    # Never load the potentially large private response body into an operational GET.
+    columns = ("id", "invocation_key", "step_key", "attempt", "call_id", "call_index", "route", "status",
+        "request_hash", "response_hash", "capture_epoch", "created_at", "response_saved_at", "applied_at", "error_code")
+    receipts = (await session.execute(select(*(getattr(LLMInvocation, key) for key in columns),
+        LLMInvocation.response_log).where(LLMInvocation.run_id == run_id)
+        .order_by(LLMInvocation.created_at, LLMInvocation.id).limit(100))).mappings().all()
+    from app.services.invocations import safe_response_log
+    invocations = []
+    for receipt in receipts:
+        log = safe_response_log(receipt["response_log"])
+        invocations.append({**{key: receipt[key].isoformat() if key.endswith("_at") and receipt[key] else receipt[key]
+            for key in columns}, **{key: log.get(key) for key in
+                ("provider_request_id", "model_name", "prompt_tokens", "completion_tokens", "total_tokens")}})
     return {"data": {
         "run": (await _run_summaries(session, [run], settings, moment))[0],
         "checkpoints": [{"id": item.id, "key": item.checkpoint_key, "created_at": item.created_at.isoformat(),
@@ -252,7 +266,7 @@ async def recovery_run_detail(run_id: str, request: Request, user: Admin, sessio
             "quality_retry_limit": settings.quality_retry_limit, "run_timeout_seconds": settings.run_timeout_seconds,
             "elapsed_seconds": int(elapsed), "attempt_counts": {key: value for key, value in budget.get("attempt_counts", {}).items()
                 if isinstance(key, str) and len(key) <= 200 and isinstance(value, int) and value >= 0}},
-        "calls": list(ledger.values()), "event_total": run.sequence,
+        "calls": list(ledger.values()), "invocations": invocations, "event_total": run.sequence,
         "events": [{"sequence": item.sequence, "event_type": item.event_type,
             "created_at": item.created_at.isoformat(), "payload": _safe_metadata(item.payload)} for item in events],
         "alerts": [_alert_view(alert) for alert in alerts],
@@ -380,3 +394,41 @@ async def acknowledge_recovery_alert(alert_id: str, body: RecoveryReason, user: 
 @router.post("/recovery-alerts/{alert_id}/resolve")
 async def resolve_recovery_alert(alert_id: str, body: RecoveryReason, user: Admin, session: Session):
     return await _alert_action(session, alert_id, body, user, "resolve")
+
+
+ExecutionLevel = Literal["info", "warning", "error"]
+ExecutionStatus = Literal["running", "completed", "failed", "cancelled", "lease_lost", "interrupted"]
+ExecutionWorkflow = Literal["one_click", "interactive_step", "interactive_finalize", "module_polish_message",
+    "reflection_polish_message", "export", "document_parse", "knowledge_document_parse", "lesson_internal_review"]
+
+
+@router.get("/execution-logs")
+async def execution_logs(request: Request, user: Admin, session: Session,
+        run_id: str | None = Query(default=None, max_length=36),
+        level: ExecutionLevel | None = None, status: ExecutionStatus | None = None,
+        workflow: ExecutionWorkflow | None = None, after: int = Query(default=0, ge=0),
+        limit: int = Query(default=50, ge=1, le=100)):
+    from app.db.models import ExecutionLog
+    from app.services.execution_logs import execution_log_view, observability_status
+
+    query = select(ExecutionLog, Run.workflow_type).join(Run, Run.id == ExecutionLog.run_id).where(
+        ExecutionLog.sequence > after)
+    if run_id:
+        query = query.where(ExecutionLog.run_id == run_id)
+    if level:
+        query = query.where(ExecutionLog.level == level)
+    if status:
+        query = query.where(ExecutionLog.status == status)
+    if workflow:
+        query = query.where(Run.workflow_type == workflow)
+    rows = (await session.execute(query.order_by(ExecutionLog.sequence).limit(limit + 1))).all()
+    items = [execution_log_view(item, workflow_type) for item, workflow_type in rows[:limit]]
+    return {"data": {"items": items, "next_after": items[-1]["sequence"] if items else after,
+        "has_more": len(rows) > limit, "observability": observability_status(request.app.state)}}
+
+
+@router.get("/observability")
+async def observability(request: Request, user: Admin):
+    from app.services.execution_logs import observability_status
+
+    return {"data": observability_status(request.app.state)}

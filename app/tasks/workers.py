@@ -1,5 +1,7 @@
 """Seven isolated ARQ worker entry points, using the same service owner as HTTP."""
 
+import asyncio
+
 from arq import cron
 from arq.connections import RedisSettings
 
@@ -10,11 +12,16 @@ async def startup(ctx):
     from app.factory import create_app
     app = create_app(get_settings())
     ctx["app"] = app
+    await app.state.execution_logs.start()
+    app.state.observer.start()
     await app.state.dispatcher.connect()
 
 
 async def shutdown(ctx):
     await ctx["app"].state.dispatcher.close()
+    settings = ctx["app"].state.settings
+    await ctx["app"].state.execution_logs.close(settings.obs_shutdown_timeout_seconds)
+    await asyncio.to_thread(ctx["app"].state.observer.close, timeout=settings.obs_shutdown_timeout_seconds)
     await ctx["app"].state.db.engine.dispose()
 
 

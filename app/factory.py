@@ -19,17 +19,28 @@ def create_app(settings=None):
 
     @asynccontextmanager
     async def lifespan(app):
-        await app.state.dispatcher.connect()
-        # Schema creation is exclusively Alembic, never application startup.
-        if settings.task_queue_mode == "inline":
-            await app.state.dispatcher.reconcile()
-        yield
-        await app.state.dispatcher.close()
-        await app.state.db.engine.dispose()
+        await app.state.execution_logs.start()
+        app.state.observer.start()
+        try:
+            await app.state.dispatcher.connect()
+            # Schema creation is exclusively Alembic, never application startup.
+            if settings.task_queue_mode == "inline":
+                await app.state.dispatcher.reconcile()
+            yield
+        finally:
+            await app.state.dispatcher.close()
+            await app.state.execution_logs.close(settings.obs_shutdown_timeout_seconds)
+            await asyncio.to_thread(app.state.observer.close, timeout=settings.obs_shutdown_timeout_seconds)
+            await app.state.db.engine.dispose()
 
     app = FastAPI(title="教案助手 API", version="1.0.0", lifespan=lifespan)
     app.state.settings = settings
     app.state.db = Database(settings)
+    from app.observability import create_observer
+    from app.services.execution_logs import ExecutionLogWriter
+    app.state.execution_logs = ExecutionLogWriter(app.state.db.session_factory,
+        max_queue=settings.obs_export_queue_size)
+    app.state.observer = create_observer(settings, local_sink=app.state.execution_logs.submit)
     app.state.admission_lock = asyncio.Lock()
     from app.ai.runtime import LessonRuntime
     from app.integrations.storage import create_storage

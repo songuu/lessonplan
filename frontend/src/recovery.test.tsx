@@ -68,10 +68,10 @@ const button = (text: string) =>
 async function click(text: string) {
   await act(async () => button(text).click());
 }
-async function mount(user = admin) {
+async function mount(user = admin, entry = "/admin/recovery") {
   await act(async () =>
     root.render(
-      <MemoryRouter>
+      <MemoryRouter initialEntries={[entry]}>
         <RecoveryPage user={user} />
       </MemoryRouter>,
     ),
@@ -158,6 +158,96 @@ afterEach(async () => {
   vi.useRealTimers();
 });
 describe("recovery operations", () => {
+  it("opens the originating task when linked from execution logs", async () => {
+    await mount(admin, "/admin/recovery?run_id=r1");
+    expect(vi.mocked(api).mock.calls.some(([path]) =>
+      path.startsWith("/admin/recovery-runs/r1?"),
+    )).toBe(true);
+    expect(host.textContent).toContain("模型调用回执");
+  });
+  it("supports older task details without model invocation receipts", async () => {
+    await mount();
+    await click("查看任务 r1");
+    expect(host.textContent).toContain("模型调用回执");
+    expect(host.textContent).toContain("尚无持久化模型回执");
+    expect(host.querySelector('[aria-label="模型调用回执"]')).toBeNull();
+  });
+  it("shows persisted and uncertain invocation receipts without exposing response bodies", async () => {
+    const receipt = {
+      id: "receipt1",
+      invocation_key: "invocation-key-1",
+      step_key: "one_click:batch1",
+      attempt: 1,
+      call_id: "model-call-1",
+      call_index: 2,
+      route: "primary",
+      status: "response_saved",
+      request_hash: "request-fingerprint-1",
+      response_hash: "response-fingerprint-1",
+      capture_epoch: 3,
+      created_at: run.created_at,
+      response_saved_at: "2026-10-16T02:00:10Z",
+      applied_at: null,
+      error_code: null,
+      provider_request_id: "provider-job-1",
+      model_name: "configured-model",
+      prompt_tokens: 201,
+      completion_tokens: 317,
+      total_tokens: 518,
+      response_body: "PRIVATE_RAW_MODEL_RESPONSE",
+      messages: [{ content: "PRIVATE_TEACHER_PROMPT" }],
+    };
+    vi.mocked(api).mockImplementation(async (path) => {
+      const result = fixtures(path);
+      if (path.startsWith("/admin/recovery-runs/r1?"))
+        return {
+          ...(result as object),
+          invocations: [
+            receipt,
+            {
+              ...receipt,
+              id: "receipt2",
+              invocation_key: "invocation-key-2",
+              status: "outcome_unknown",
+              response_hash: null,
+              response_saved_at: null,
+              provider_request_id: null,
+              prompt_tokens: null,
+              completion_tokens: null,
+              total_tokens: null,
+              error_code: "LLM_OUTCOME_UNKNOWN",
+            },
+          ],
+        };
+      return result;
+    });
+    await mount();
+    await click("查看任务 r1");
+    const table = host.querySelector('[aria-label="模型调用回执"]');
+    expect(table).not.toBeNull();
+    expect(table?.textContent).toContain("响应已保存");
+    expect(table?.textContent).toContain("结果未知");
+    expect(table?.textContent).toContain("one_click:batch1");
+    expect(table?.textContent).toContain("model-call-1");
+    expect(table?.textContent).toContain("invocation-key-1");
+    expect(table?.textContent).toContain("provider-job-1");
+    expect(table?.textContent).toContain("request-fingerprint-1");
+    expect(table?.textContent).toContain("response-fingerprint-1");
+    expect(table?.textContent).toContain("第 1 次尝试");
+    expect(table?.textContent).toContain("批次 3");
+    expect(table?.textContent).toContain("输入 201");
+    expect(table?.textContent).toContain("输出 317");
+    expect(table?.textContent).toContain("总计 518");
+    expect(table?.textContent).toContain("尚未取得实际用量");
+    expect(table?.textContent).toContain("LLM_OUTCOME_UNKNOWN");
+    expect(host.textContent).toContain("不会自动重新调用模型");
+    expect(host.textContent).toContain(
+      "当前通用模型接口不支持查询 Provider 结果",
+    );
+    expect(host.textContent).not.toContain("PRIVATE_RAW_MODEL_RESPONSE");
+    expect(host.textContent).not.toContain("PRIVATE_TEACHER_PROMPT");
+    expect(host.textContent).toContain("原始响应保存不代表模块已通过校验");
+  });
   it("does not route administrators into other teachers private lessons", async () => {
     await mount();
     await click("查看任务 r1");
@@ -166,15 +256,22 @@ describe("recovery operations", () => {
   });
   it("omits empty status filters accepted only as absent by the API", async () => {
     await mount();
-    const initial = vi.mocked(api).mock.calls.find(([path]) =>
-      path.startsWith("/admin/recovery-runs?"),
-    )![0];
-    expect(new URL(initial, "http://localhost").searchParams.has("status")).toBe(false);
+    const initial = vi
+      .mocked(api)
+      .mock.calls.find(([path]) =>
+        path.startsWith("/admin/recovery-runs?"),
+      )![0];
+    expect(
+      new URL(initial, "http://localhost").searchParams.has("status"),
+    ).toBe(false);
     await value("告警状态", "");
-    const latest = vi.mocked(api).mock.calls.filter(([path]) =>
-      path.startsWith("/admin/recovery-alerts?"),
-    ).at(-1)![0];
-    expect(new URL(latest, "http://localhost").searchParams.has("status")).toBe(false);
+    const latest = vi
+      .mocked(api)
+      .mock.calls.filter(([path]) => path.startsWith("/admin/recovery-alerts?"))
+      .at(-1)![0];
+    expect(new URL(latest, "http://localhost").searchParams.has("status")).toBe(
+      false,
+    );
   });
   it("blocks teacher access before issuing global management requests", async () => {
     await mount({ ...admin, role: "teacher" });

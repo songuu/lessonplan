@@ -4,7 +4,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import AliasChoices, Field, model_validator
+from pydantic import AliasChoices, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 DEVELOPMENT_JWT_SECRET = "local-development-only-change-before-production"
@@ -60,6 +60,20 @@ class Settings(BaseSettings):
     queue_backlog_seconds: int = Field(default=60, ge=1, le=86400)
     knowledge_search_max_chunks: int = Field(default=10000, ge=100, le=100000)
     registration_enabled: bool = True
+    langfuse_enabled: bool = False
+    langfuse_public_key: str = ""
+    langfuse_secret_key: SecretStr = SecretStr("")
+    langfuse_base_url: str = ""
+    langfuse_project: str = ""
+    obs_deployment_id: str = "lesson-assistant-local"
+    obs_release: str = ""
+    obs_capture_mode: Literal["metadata"] = "metadata"
+    obs_trace_sample_rate: float = Field(default=1, ge=0, le=1)
+    obs_export_queue_size: int = Field(default=512, ge=1, le=10000)
+    obs_max_event_bytes: int = Field(default=16384, ge=1024, le=65536)
+    obs_export_timeout_seconds: float = Field(default=2, gt=0, le=10)
+    obs_shutdown_timeout_seconds: float = Field(default=5, ge=0, le=30)
+    obs_id_hash_key: SecretStr = SecretStr("")
 
     @property
     def llm_provider(self) -> str:

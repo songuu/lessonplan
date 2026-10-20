@@ -172,8 +172,32 @@ export type RecoveryEvent = {
   execution_epoch?: number;
   code?: string;
 };
+export type RecoveryInvocation = {
+  id: string;
+  invocation_key: string;
+  step_key: string;
+  attempt: number;
+  call_id: string;
+  call_index: number;
+  route: string;
+  status:
+    "in_flight" | "response_saved" | "applied" | "failed" | "outcome_unknown";
+  request_hash: string;
+  response_hash: string | null;
+  capture_epoch: number;
+  created_at: string;
+  response_saved_at: string | null;
+  applied_at: string | null;
+  error_code: string | null;
+  provider_request_id: string | null;
+  model_name: string | null;
+  prompt_tokens: number | null;
+  completion_tokens: number | null;
+  total_tokens: number | null;
+};
 export type RecoveryDetail = {
   run: RecoveryRun;
+  invocations?: RecoveryInvocation[];
   checkpoints: {
     id: string;
     key: string;
@@ -222,3 +246,44 @@ export type RecoveryOverview = {
 };
 export const terminal = (status: string) =>
   ["completed", "failed", "cancelled"].includes(status);
+
+export type ExecutionLog = {
+  sequence: number;
+  event_id: string;
+  run_id: string;
+  execution_epoch: number;
+  trace_id: string;
+  span_id: string;
+  parent_span_id: string | null;
+  phase: "start" | "end" | "event";
+  name: string;
+  run_type: string;
+  level: "info" | "warning" | "error";
+  status:
+    | "running"
+    | "completed"
+    | "failed"
+    | "cancelled"
+    | "lease_lost"
+    | "interrupted";
+  started_at: string;
+  ended_at: string | null;
+  elapsed_ms: number | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  workflow_type: string;
+};
+export type ObservabilityStatus = {
+  provider?: string;
+  enabled?: boolean;
+  configured?: boolean;
+  project?: string;
+  local?: Record<string, unknown>;
+  [key: string]: unknown;
+};
+export type ExecutionLogPage = {
+  items: ExecutionLog[];
+  next_after: number;
+  has_more: boolean;
+  observability?: ObservabilityStatus;
+};

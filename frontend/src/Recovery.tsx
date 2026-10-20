@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import {
   Activity,
   AlertTriangle,
@@ -18,6 +18,7 @@ import type {
   RecoveryAlert,
   RecoveryDetail,
   RecoveryEvent,
+  RecoveryInvocation,
   RecoveryOverview,
   RecoveryPageResult,
   RecoveryRun,
@@ -31,6 +32,7 @@ const eventLabels: Record<string, string> = {
   dispatch_published: "任务已投递",
   worker_recovering: "接管过期任务",
   checkpoint_restored: "恢复已保存断点",
+  llm_response_replayed: "复用已保存的模型响应，继续校验与保存",
   quality_retry_started: "质量校验重试",
   run_completed: "任务已完成",
   run_cancelled: "任务已取消",
@@ -51,6 +53,10 @@ const statusLabels: Record<string, string> = {
   open: "待处理",
   acknowledged: "已确认",
   resolved: "已关闭",
+  in_flight: "调用进行中",
+  response_saved: "响应已保存",
+  applied: "已提交业务结果",
+  outcome_unknown: "结果未知",
 };
 const time = (value?: string | null) =>
   value ? new Date(value).toLocaleString("zh-CN", { hour12: false }) : "—";
@@ -61,6 +67,101 @@ function State({ value }: { value: string }) {
     <span className={`recovery-state recovery-state-${value}`}>
       {statusLabels[value] || value}
     </span>
+  );
+}
+
+function InvocationReceipts({
+  invocations = [],
+}: {
+  invocations?: RecoveryInvocation[];
+}) {
+  return (
+    <>
+      <h3 className="recovery-subheading">
+        模型调用回执 <span>{invocations.length}</span>
+      </h3>
+      {invocations.length ? (
+        <>
+          <p className="recovery-explanation">
+            原始响应保存不代表模块已通过校验。恢复时可复用已保存的响应，继续校验并提交业务结果；回执仅显示指纹与实际用量。
+          </p>
+          {invocations.some(
+            (receipt) => receipt.status === "outcome_unknown",
+          ) && (
+            <p className="recovery-explanation" role="status">
+              存在结果未知的调用：为避免重复计费，不会自动重新调用模型。当前通用模型接口不支持查询
+              Provider 结果，请先核对模型服务端记录。
+            </p>
+          )}
+          <div className="table-scroll">
+            <table className="recovery-table" aria-label="模型调用回执">
+              <thead>
+                <tr>
+                  <th>调用 / 步骤</th>
+                  <th>回执状态</th>
+                  <th>输入 / 响应指纹</th>
+                  <th>执行批次 / Provider 回执</th>
+                  <th>实际 Token 用量</th>
+                  <th>调用 / 保存 / 提交时间</th>
+                </tr>
+              </thead>
+              <tbody>
+                {invocations.map((receipt) => (
+                  <tr key={receipt.id}>
+                    <td>
+                      <b>{receipt.model_name || "待确定模型"}</b>
+                      <code>{receipt.step_key}</code>
+                      <code>{receipt.call_id}</code>
+                      <small>
+                        调用 {receipt.call_index} · {receipt.route} · 第{" "}
+                        {receipt.attempt} 次尝试
+                      </small>
+                      <code>{receipt.invocation_key}</code>
+                    </td>
+                    <td>
+                      <State value={receipt.status} />
+                      {receipt.error_code && <code>{receipt.error_code}</code>}
+                    </td>
+                    <td>
+                      <small>输入</small>
+                      <code>{receipt.request_hash}</code>
+                      <small>响应</small>
+                      <code>{receipt.response_hash || "尚未保存完整响应"}</code>
+                    </td>
+                    <td>
+                      批次 {receipt.capture_epoch}
+                      <code>{receipt.provider_request_id || "—"}</code>
+                    </td>
+                    <td>
+                      {receipt.prompt_tokens === null &&
+                      receipt.completion_tokens === null &&
+                      receipt.total_tokens === null ? (
+                        "尚未取得实际用量"
+                      ) : (
+                        <>
+                          输入 {receipt.prompt_tokens ?? "—"}
+                          <br />
+                          输出 {receipt.completion_tokens ?? "—"}
+                          <br />
+                          总计 {receipt.total_tokens ?? "—"}
+                        </>
+                      )}
+                    </td>
+                    <td>
+                      {time(receipt.created_at)}
+                      <small>响应保存 {time(receipt.response_saved_at)}</small>
+                      <small>业务提交 {time(receipt.applied_at)}</small>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      ) : (
+        <p className="recovery-muted">尚无持久化模型回执。</p>
+      )}
+    </>
   );
 }
 
@@ -178,6 +279,8 @@ export function RecoveryPage({ user }: { user: User }) {
   return <RecoveryWorkspace key={user.id} userId={user.id} />;
 }
 function RecoveryWorkspace({ userId }: { userId: string }) {
+  const [searchParameters] = useSearchParams();
+  const requestedRun = searchParameters.get("run_id") || "";
   const [automatic, setAutomatic] = useState(true);
   const [revision, setRevision] = useState(0);
   const [status, setStatus] = useState("");
@@ -187,7 +290,9 @@ function RecoveryWorkspace({ userId }: { userId: string }) {
   const [offset, setOffset] = useState(0);
   const [alertStatus, setAlertStatus] = useState("open");
   const [alertOffset, setAlertOffset] = useState(0);
-  const [selected, setSelected] = useState("");
+  const [selected, setSelected] = useState(() =>
+    /^[A-Za-z0-9_-]{1,36}$/.test(requestedRun) ? requestedRun : "",
+  );
   const [eventCursors, setEventCursors] = useState([0]);
   const [operation, setOperation] = useState<Operation | null>(null);
   const [reason, setReason] = useState("");
@@ -232,6 +337,12 @@ function RecoveryWorkspace({ userId }: { userId: string }) {
     revision,
   );
   useEffect(() => () => actionController.current?.abort(), []);
+  useEffect(() => {
+    if (/^[A-Za-z0-9_-]{1,36}$/.test(requestedRun)) {
+      setSelected(requestedRun);
+      setEventCursors([0]);
+    }
+  }, [requestedRun]);
   const choose = (id: string) => {
     setSelected(id);
     setEventCursors([0]);
@@ -699,6 +810,7 @@ function RecoveryWorkspace({ userId }: { userId: string }) {
                 ) : (
                   <p className="recovery-muted">尚无持久化断点。</p>
                 )}
+                <InvocationReceipts invocations={detail.data.invocations} />
                 <h3 className="recovery-subheading">
                   模型调用记录 <span>{detail.data.calls.length}</span>
                 </h3>

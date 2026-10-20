@@ -42,7 +42,7 @@ uv run python scripts/manage.py create-admin --email admin@example.com --name �
 - 个人设置、模块偏好、管理端用户/运行/问题/审计、受控埋点。
 - OpenAI-compatible 主备模型、质量门、安全修补、后台跨模块审查。
 - PostgreSQL/Alembic、Redis/ARQ 七类隔离 Worker、dispatch Outbox、稳定 job ID。
-- 有界格式与质量失败重试、持久模块/活动断点、执行租约及 Worker 崩溃续跑。
+- 有界格式与质量失败重试、持久模块/活动断点、模型原始响应回执与恢复重放、执行租约及 Worker 崩溃续跑。
 
 ## 真实 AI 与队列
 
@@ -59,7 +59,7 @@ uv run python scripts/run_local.py stop
 
 前置配置、首次迁移和真实模型验收见[本地 Docker 完整流程](docs/本地Docker完整流程.md)。`compose.local.yaml` 只管理 Redis，现有 `rag-system-postgres-1` 继续由原项目管理。
 
-知识库操作、检索方式、重试预算和断点恢复边界见[知识检索与断点恢复](docs/知识检索与断点恢复.md)。已有数据库先备份并停止旧应用进程，再执行 `alembic upgrade head` 升级至 `0004`。管理员可在 `/admin/recovery` 查看投递、断点、累计预算和告警，操作说明见[任务恢复管理与告警](docs/任务恢复管理与告警.md)。
+知识库操作、检索方式、重试预算和断点恢复边界见[知识检索与断点恢复](docs/知识检索与断点恢复.md)。已有数据库先备份并停止旧应用进程，再执行 `alembic upgrade head` 升级至 `0006`。管理员可在 `/admin/recovery` 查看投递、断点、累计预算、模型回执和告警，操作说明见[任务恢复管理与告警](docs/任务恢复管理与告警.md)。模型成功但业务提交中断的处理见[模型调用回执与恢复](docs/模型调用回执与恢复.md)。
 
 真实凭证通过忽略的 `.env` 或运行环境注入：`AI_PROVIDER=lesson_plan_ai`、`LLM_BASE_URL`、`LLM_API_KEY`、`LLM_MODEL`。也可分别设置 `LLM_ONE_CLICK_MODEL`、`LLM_STRUCTURED_MODEL`、`LLM_MODULE_OPERATION_MODEL`、`LLM_REVIEW_MODEL`。备用路由为 `LLM_FALLBACK_*`。教师端不提供模型选择。
 
@@ -76,6 +76,12 @@ uv run arq app.tasks.workers.MaintenanceWorkerSettings
 ```
 
 完整本地容器拓扑：`docker compose up --build`。包含独立 PostgreSQL/Redis、singleton 迁移、API 和七类 Worker，依赖端口仅监听本机。生产发布见 [部署说明](deploy/README.md)。COS 可选依赖 `uv sync --extra cos`，设置 `STORAGE_BACKEND=cos` 与服务端环境凭证。
+
+## Langfuse 与执行日志
+
+使用开源免费自托管 Langfuse，无需 LangChain、LangGraph 或企业许可证。管理员从 `/admin` 进入“执行日志”（`/admin/execution-logs`），按任务、状态、级别和工作流查看实际执行步骤、模型请求、耗时、已知用量、断点与回执复用；详情可复制 Langfuse Trace ID 并查看对应恢复记录。默认只采集受控元数据。
+
+本地日志独立持久化，禁用或未配置 Langfuse 仍可查询。远端追踪使用独立 `compose.langfuse.yaml`，UI 默认 [127.0.0.1:3100](http://127.0.0.1:3100)。配置生成、私有凭证、API/全部 Worker 注入和实际追踪读回见 [Langfuse 自托管部署](docs/Langfuse自托管部署.md)，设计与范围见 [接入方案](docs/plans/2026-10-20-langfuse-observability.md)。新日志从启用后的任务开始，历史任务不会自动补传。
 
 ## 验证
 

@@ -12,6 +12,7 @@ from uuid import uuid4
 from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.inspection import inspect
 
+from app.ai.observability import observe_step, step
 from app.core.errors import AppError
 from app.db.models import (
     Blueprint,
@@ -441,6 +442,7 @@ class WorkflowExecutor:
                 task.cancel()
                 return
 
+    @observe_step("checkpoint.save", run_type="tool")
     async def save_checkpoint(self, run_id, key, payload, fingerprint):
         async with self.app.state.db.session_factory() as session:
             await self.lock_execution(session, run_id)
@@ -453,6 +455,7 @@ class WorkflowExecutor:
                 existing.input_fingerprint, existing.payload = fingerprint, payload
             await session.commit()
 
+    @observe_step("checkpoint.load", run_type="tool")
     async def load_checkpoints(self, run_id, fingerprint):
         async with self.app.state.db.session_factory() as session:
             await self.lock_execution(session, run_id)
@@ -515,7 +518,9 @@ class WorkflowExecutor:
         except Exception as exc:
             # Provider exceptions may contain secrets; only controlled errors reach public facts.
             code = getattr(exc, "code", None) or "WORKFLOW_FAILED"
-            await self.fail(run_id, code, "任务未完成，请稍后重试",
+            message = ("模型调用结果尚未确认，已停止自动重发以避免重复计费，请核对服务商记录"
+                if code == "LLM_OUTCOME_UNKNOWN" else "任务未完成，请稍后重试")
+            await self.fail(run_id, code, message,
                             calls=getattr(exc, "calls", []), findings=getattr(exc, "findings", []))
         finally:
             heartbeat.cancel()
@@ -580,6 +585,10 @@ class WorkflowExecutor:
                                   "job_id": run.job_id, "execution_epoch": run.execution_epoch, "stage": run.payload.get("stage"),
                                   "module_id": run.payload.get("module_id")}))
             await record_calls(session, run, calls)
+            if code == "LLM_OUTCOME_UNKNOWN":
+                from app.services.recovery import signal_alert
+                await signal_alert(session, "LLM_OUTCOME_UNKNOWN", "", run, severity="warning",
+                    metadata={"execution_epoch": run.execution_epoch})
             if findings and draft:
                 session.add(QualityResult(id=uid(), run_id=run.id, draft_id=draft.id,
                     module_id=run.payload.get("module_id"), gate="module_quality", status="blocked",
@@ -587,6 +596,7 @@ class WorkflowExecutor:
             await session.commit()
         await self.app.state.dispatcher.notify(run_id)
 
+    @observe_step("workflow.generate")
     async def generate(self, run_id, data, payload, workflow):
         async with self.app.state.db.session_factory() as session:
             run, draft = await self.lock_execution(session, run_id)
@@ -615,6 +625,8 @@ class WorkflowExecutor:
                 "stage": payload.get("stage"), "workflow": workflow, "blueprint": blueprint.payload if blueprint else None})
             await session.commit()
         resume = await self.load_checkpoints(run_id, fingerprint)
+        from app.services.invocations import InvocationJournal
+        journal = InvocationJournal.for_workflow(self, run_id, fingerprint)
         if self.lease.epoch:
             await self.emit(run_id, "module_progress", {"phase": "worker_recovering", "execution_epoch": self.lease.epoch})
             for module in modules:
@@ -648,7 +660,7 @@ class WorkflowExecutor:
         result = await self.app.state.runtime.generate(data, modules,
             blueprint=blueprint.payload if blueprint else None, dependencies=dependencies if workflow == "interactive_step" else None,
             stage=payload.get("stage"), outline=outline, event_sink=sink,
-            checkpoint_sink=checkpoint_sink, resume=resume)
+            checkpoint_sink=checkpoint_sink, resume=resume, invocation_store=journal)
         if not quality_started:
             await self.emit(run_id, "module_progress", {"phase": "quality_check_and_repair_started"})
         async with self.app.state.db.session_factory() as session:
@@ -687,11 +699,13 @@ class WorkflowExecutor:
                 draft.status, draft.completion_status = "creating", "writing"
                 await event(session, run, "structured_step_ready", {"module_id": payload["module_id"], "stage": payload.get("stage")})
             degraded = any(call.get("fallback_used", call.get("fallback")) for call in result.get("calls", []))
+            await journal.mark_applied(session)
             await finish(session, run, "completed", result={"draft_id": draft.id}, degraded=degraded)
             review_run = None
             if workflow == "one_click":
                 review_run = await self.queue_review(session, draft, run)
-            await session.commit()
+            with step("business.commit", run_type="tool"):
+                await session.commit()
         if review_run:
             await self.app.state.dispatcher.submit(review_run.id)
         await self.app.state.dispatcher.notify(run_id)
@@ -705,6 +719,7 @@ class WorkflowExecutor:
         return await create_run(session, draft, user, "lesson_internal_review", {},
                                 f"review-{draft.id}-{draft.content_version}")
 
+    @observe_step("workflow.polish")
     async def polish(self, run_id, data, payload):
         content = payload["working_content"]
         if payload.get("scope") == "selection":
@@ -722,6 +737,9 @@ class WorkflowExecutor:
                 "assets": asset_identity(self.app.state.runtime)})
         resume = await self.load_checkpoints(run_id, fingerprint)
 
+        from app.services.invocations import InvocationJournal
+        journal = InvocationJournal.for_workflow(self, run_id, fingerprint)
+
         async def checkpoint_sink(key, item):
             await self.save_checkpoint(run_id, key, item, fingerprint)
 
@@ -736,7 +754,8 @@ class WorkflowExecutor:
             elif kind == "module_progress":
                 await self.emit(run_id, kind, {**item, "module_id": payload.get("module_id")})
         result = await self.app.state.runtime.polish(data, content, payload["instruction"],
-            scope=payload.get("scope", "module"), event_sink=sink, checkpoint_sink=checkpoint_sink, resume=resume)
+            scope=payload.get("scope", "module"), event_sink=sink, checkpoint_sink=checkpoint_sink,
+            resume=resume, invocation_store=journal)
         async with self.app.state.db.session_factory() as session:
             run, draft = await self.lock_execution(session, run_id)
             candidate = result["content"]
@@ -751,11 +770,14 @@ class WorkflowExecutor:
                                                        "replace_previous": True, "is_temporary": False})
             await event(session, run, "module_done", {"module_id": payload.get("module_id"), "is_temporary": False})
             await event(session, run, "polish_ready", ready)
+            await journal.mark_applied(session)
             await finish(session, run, "completed", result=ready,
                 degraded=any(call.get("fallback_used", call.get("fallback")) for call in result.get("calls", [])))
-            await session.commit()
+            with step("business.commit", run_type="tool"):
+                await session.commit()
         await self.app.state.dispatcher.notify(run_id)
 
+    @observe_step("workflow.export")
     async def export(self, run_id, payload):
         from app.integrations.documents import DocumentAdapter
         async with self.app.state.db.session_factory() as session:
@@ -786,7 +808,8 @@ class WorkflowExecutor:
                         issue_type="render_warning", issue_code="EXPORT_RENDER_WARNING", severity="warning",
                         metadata_json={"warning_count": len(warnings)}))
                 await finish(session, run, "completed", result={"export_id": export.id}, degraded=bool(warnings))
-                await session.commit()
+                with step("business.commit", run_type="tool"):
+                    await session.commit()
                 saved = True
         finally:
             if not saved:
@@ -794,6 +817,7 @@ class WorkflowExecutor:
                     await asyncio.to_thread(self.app.state.storage.delete, key)
         await self.app.state.dispatcher.notify(run_id)
 
+    @observe_step("workflow.document_parse")
     async def parse_document(self, run_id, payload):
         from app.integrations.documents import DocumentAdapter
         from app.integrations.thumbnails import create_thumbnail
@@ -847,6 +871,7 @@ class WorkflowExecutor:
             await session.commit()
             return document is not None
 
+    @observe_step("workflow.review")
     async def review(self, run_id, data):
         async with self.app.state.db.session_factory() as session:
             run, draft = await self.lock_execution(session, run_id)
@@ -856,6 +881,9 @@ class WorkflowExecutor:
                 "assets": asset_identity(self.app.state.runtime)})
         resume = await self.load_checkpoints(run_id, fingerprint)
 
+        from app.services.invocations import InvocationJournal
+        journal = InvocationJournal.for_workflow(self, run_id, fingerprint)
+
         async def checkpoint_sink(key, item):
             await self.save_checkpoint(run_id, key, item, fingerprint)
 
@@ -864,13 +892,15 @@ class WorkflowExecutor:
                 await self.emit(run_id, kind, item)
 
         result = await self.app.state.runtime.review(data, modules,
-            checkpoint_sink=checkpoint_sink, resume=resume, event_sink=sink)
+            checkpoint_sink=checkpoint_sink, resume=resume, event_sink=sink, invocation_store=journal)
         async with self.app.state.db.session_factory() as session:
             run, draft = await self.lock_execution(session, run_id)
             draft.semantic_review_status = "done"
             session.add(QualityResult(id=uid(), run_id=run.id, draft_id=draft.id, module_id=None,
                 gate="cross_module_review", status="done", findings=result.get("findings", []), content_hash=digest(modules)))
             await record_calls(session, run, result.get("calls"))
+            await journal.mark_applied(session)
             await finish(session, run, "completed", result={"reviewed": True})
-            await session.commit()
+            with step("business.commit", run_type="tool"):
+                await session.commit()
         await self.app.state.dispatcher.notify(run_id)

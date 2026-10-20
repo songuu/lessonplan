@@ -48,6 +48,9 @@ const KnowledgePage = lazy(() =>
 const RecoveryPage = lazy(() =>
   import("./Recovery").then((module) => ({ default: module.RecoveryPage })),
 );
+const ExecutionLogsPage = lazy(() =>
+  import("./ExecutionLogs").then((module) => ({ default: module.ExecutionLogsPage })),
+);
 export function App() {
   return (
     <BrowserRouter>
@@ -144,6 +147,10 @@ function Application() {
                     <Activity size={19} />
                     <span>任务恢复与告警</span>
                   </NavLink>
+                  <NavLink to="/admin/execution-logs">
+                    <Activity size={19} />
+                    <span>执行日志</span>
+                  </NavLink>
                 </>
               )}
             </nav>
@@ -190,7 +197,9 @@ function Application() {
               </button>
               <span>
                 我的教学空间 <span className="slash">/</span>{" "}
-                {location.pathname === "/admin/recovery"
+                {location.pathname === "/admin/execution-logs"
+                  ? "执行日志"
+                  : location.pathname === "/admin/recovery"
                   ? "任务恢复与告警"
                   : location.pathname.startsWith("/lessons/")
                     ? "教案编辑"
@@ -214,6 +223,7 @@ function Application() {
                     element={<SettingsPage user={user} onUser={setUser} />}
                   />
                   <Route path="/lessons/:id" element={<LessonPage />} />
+                  <Route path="/admin/execution-logs" element={<ExecutionLogsPage user={user} />} />
                   <Route
                     path="/admin/recovery"
                     element={<RecoveryPage user={user} />}

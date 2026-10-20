@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -12,11 +13,20 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from .observability import step
+
+UNCERTAIN_RESPONSE_CODES = frozenset({
+    "provider_incomplete_stream", "provider_stream_error", "provider_invalid_response",
+    "provider_response_limit", "provider_empty_response",
+})
+
 
 class GatewayError(Exception):
-    def __init__(self, code: str, message: str, *, calls: list[dict] | None = None):
+    def __init__(self, code: str, message: str, *, calls: list[dict] | None = None,
+                 outcome_unknown: bool = False):
         super().__init__(message)
         self.code, self.message, self.calls = code, message, calls or []
+        self.outcome_unknown = outcome_unknown
 
 
 @dataclass
@@ -52,7 +62,7 @@ class LLMGateway:
 
     async def complete(self, messages: list[dict], *, route: str, prompt_version: str = "",
                        on_delta: Callable | None = None, on_reset: Callable | None = None,
-                       mock_content: str | None = None) -> Completion:
+                       mock_content: str | None = None, strict_outcome: bool = False) -> Completion:
         provider = setting(self.settings, "ai_provider", "mock")
         started = time.monotonic()
         if provider == "mock":
@@ -87,8 +97,46 @@ class LLMGateway:
             try:
                 timeout = float(setting(self.settings, f"llm_{route}_timeout_seconds",
                                         setting(self.settings, "llm_timeout_seconds", 120)))
-                async with asyncio.timeout(timeout):
-                    content, usage = await self._request(config, messages, route, timeout, on_delta)
+                with step("llm.request", run_type="llm", route=route,
+                          ls_provider="openai_compatible", ls_model_name=config["model"],
+                          attempt_role="backup" if backup else "primary",
+                          prompt_version=prompt_version) as request_span:
+                    first_delta = False
+
+                    async def observed_delta(delta, *, observed_span=request_span, started_at=attempt_start):
+                        nonlocal first_delta
+                        if delta.strip() and not first_delta:
+                            first_delta = True
+                            if observed_span is not None:
+                                observed_span.event("new_token")
+                                observed_span.set(first_token_ms=round((time.monotonic() - started_at) * 1000))
+                        await invoke(on_delta, delta)
+
+                    try:
+                        async with asyncio.timeout(timeout):
+                            content, usage = await self._request(config, messages, route, timeout, observed_delta)
+                    except (TimeoutError, httpx.TimeoutException):
+                        if request_span is not None:
+                            request_span.fail("provider_timeout")
+                            request_span.set(transport_outcome="unknown", usage_known=False)
+                        raise
+                    except httpx.HTTPError:
+                        if request_span is not None:
+                            request_span.fail("provider_network_error")
+                            request_span.set(transport_outcome="unknown", usage_known=False)
+                        raise
+                    except GatewayError as exc:
+                        if request_span is not None:
+                            request_span.fail(exc.code)
+                            unknown = exc.outcome_unknown or (strict_outcome and exc.code in UNCERTAIN_RESPONSE_CODES)
+                            request_span.set(transport_outcome="unknown" if unknown else "failed",
+                                             usage_known=False)
+                        raise
+                    if request_span is not None:
+                        request_span.set(transport_outcome="success")
+                        request_span.usage({target: usage[source] for source, target in (
+                            ("prompt_tokens", "input_tokens"), ("completion_tokens", "output_tokens"),
+                            ("total_tokens", "total_tokens")) if source in usage})
                 attempts.append({"provider": "backup" if backup else "primary", "model_name": config["model"],
                                  "outcome": "success", "elapsed_ms": round((time.monotonic() - attempt_start) * 1000)})
                 log = {"component_name": route, "component_kind": "llm_agent", "llm_provider": "openai_compatible",
@@ -96,24 +144,31 @@ class LLMGateway:
                        "call_outcome": "success", "fallback_used": backup,
                        "primary_attempt_outcome": "failed" if backup else "success",
                        "elapsed_ms": round((time.monotonic() - started) * 1000), "attempts": attempts,
-                       **usage, "is_demo": False}
+                       **usage, "usage_reported": all(key in usage for key in ("prompt_tokens", "completion_tokens")),
+                       "is_demo": False}
                 return Completion(content, log)
             except (TimeoutError, httpx.TimeoutException):
-                last_error = GatewayError("provider_timeout", "AI 服务响应超时，请稍后重试。")
+                last_error = GatewayError("provider_timeout", "AI 服务响应超时，请稍后重试。", outcome_unknown=True)
             except httpx.HTTPError:
-                last_error = GatewayError("provider_network_error", "AI 服务连接异常，请稍后重试。")
+                last_error = GatewayError("provider_network_error", "AI 服务连接异常，请稍后重试。", outcome_unknown=True)
             except GatewayError as exc:
                 last_error = exc
             attempts.append({"provider": "backup" if backup else "primary", "model_name": config["model"],
                              "outcome": "failed", "error_code": last_error.code,
                              "elapsed_ms": round((time.monotonic() - attempt_start) * 1000)})
+            if strict_outcome and (last_error.outcome_unknown or last_error.code in UNCERTAIN_RESPONSE_CODES):
+                # A second transport cannot safely replace a request that may already have been billed.
+                last_error.outcome_unknown = True
+                break
         assert last_error is not None
         failed_log = {"component_name": route, "component_kind": "llm_agent", "llm_provider": "openai_compatible",
                       "model_name": attempts[-1]["model_name"], "prompt_version": prompt_version,
-                      "call_outcome": "failed", "fallback_used": len(attempts) > 1,
+                      "call_outcome": "unknown" if strict_outcome and last_error.outcome_unknown else "failed",
+                      "fallback_used": len(attempts) > 1,
                       "primary_attempt_outcome": "failed", "error_code": last_error.code,
                       "elapsed_ms": round((time.monotonic() - started) * 1000), "attempts": attempts}
-        raise GatewayError(last_error.code, last_error.message, calls=[failed_log])
+        raise GatewayError(last_error.code, last_error.message, calls=[failed_log],
+                           outcome_unknown=last_error.outcome_unknown)
 
     async def _request(self, config: dict, messages: list[dict], route: str, timeout: float,
                        on_delta: Callable | None) -> tuple[str, dict]:
@@ -126,7 +181,19 @@ class LLMGateway:
         chunks: list[str] = []
         char_count = 0
         finished = False
-        usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        usage = {}
+
+        def metadata(data):
+            if not isinstance(data, dict) or not isinstance(data.get("choices", []), list):
+                raise GatewayError("provider_invalid_response", "AI 服务响应格式无效。", outcome_unknown=True)
+            request_id = data.get("id")
+            if (isinstance(request_id, str) and re.fullmatch(r"[A-Za-z0-9_.:/-]{1,200}", request_id)
+                and config["api_key"] not in request_id):
+                usage.setdefault("provider_request_id", request_id)
+            for choice in data.get("choices", []):
+                reason = choice.get("finish_reason")
+                if reason in {"stop", "length", "content_filter", "tool_calls", "function_call"}:
+                    usage["finish_reason"] = reason
         try:
             async with client.stream("POST", config["base_url"].rstrip("/") + "/chat/completions",
                                      headers={"Authorization": f"Bearer {config['api_key']}",
@@ -134,13 +201,15 @@ class LLMGateway:
                                      json=payload, timeout=timeout) as response:
                 if response.status_code >= 400:
                     code = "provider_rate_limited" if response.status_code == 429 else "provider_http_error"
-                    raise GatewayError(code, f"AI 服务返回受控错误（HTTP {response.status_code}）。")
+                    raise GatewayError(code, f"AI 服务返回受控错误（HTTP {response.status_code}）。",
+                                       outcome_unknown=response.status_code >= 500)
                 if "text/event-stream" not in response.headers.get("content-type", ""):
                     raw = await response.aread()
                     if len(raw) > 4 * 1024 * 1024:
                         raise GatewayError("provider_response_limit", "AI 响应超出安全大小。")
                     try:
                         data = json.loads(raw)
+                        metadata(data)
                         reason = data["choices"][0].get("finish_reason")
                         if reason == "length":
                             raise GatewayError("provider_truncated", "AI 正文达到长度上限，请精简后重试。")
@@ -155,9 +224,11 @@ class LLMGateway:
                         if not isinstance(content, str):
                             raise ValueError("non-text content")
                         chunks.append(content)
-                        usage.update({k: int(v) for k, v in data.get("usage", {}).items() if k in usage and isinstance(v, int)})
+                        usage.update({k: v for k, v in (data.get("usage") or {}).items()
+                                      if k in {"prompt_tokens", "completion_tokens", "total_tokens"}
+                                      and isinstance(v, int) and not isinstance(v, bool) and v >= 0})
                         await invoke(on_delta, content)
-                    except (ValueError, TypeError, KeyError, IndexError):
+                    except (ValueError, TypeError, KeyError, IndexError, AttributeError):
                         raise GatewayError("provider_invalid_response", "AI 服务响应格式无效。") from None
                 else:
                     async for line in response.aiter_lines():
@@ -171,6 +242,7 @@ class LLMGateway:
                             continue
                         try:
                             data = json.loads(packet)
+                            metadata(data)
                             if data.get("error"):
                                 raise GatewayError("provider_stream_error", "AI 流式响应中断。")
                             for choice in data.get("choices", []):
@@ -188,8 +260,9 @@ class LLMGateway:
                                     if char_count > 4 * 1024 * 1024:
                                         raise GatewayError("provider_response_limit", "AI 响应超出安全大小。")
                                     await invoke(on_delta, content)
-                            usage.update({k: int(v) for k, v in (data.get("usage") or {}).items()
-                                          if k in usage and isinstance(v, int)})
+                            usage.update({k: v for k, v in (data.get("usage") or {}).items()
+                                          if k in {"prompt_tokens", "completion_tokens", "total_tokens"}
+                                          and isinstance(v, int) and not isinstance(v, bool) and v >= 0})
                         except (ValueError, TypeError, AttributeError):
                             raise GatewayError("provider_invalid_response", "AI 流式响应格式无效。") from None
                     if chunks and not finished:
