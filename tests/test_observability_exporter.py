@@ -139,7 +139,7 @@ def test_transient_failure_retries_once_and_opens_circuit_after_five_failed_batc
 
 
 def test_missing_configuration_and_unsupported_capture_mode_disable_only_remote():
-    for settings in (configuration(langfuse_secret_key=""), configuration(obs_capture_mode="full")):
+    for settings in (configuration(langfuse_secret_key=""), configuration(obs_capture_mode="unsupported")):
         local = []
         observer = create_observer(settings, local_sink=local.append)
         observer.start()

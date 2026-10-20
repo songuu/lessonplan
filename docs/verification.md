@@ -154,6 +154,35 @@ Langfuse返回的JSON入队确认在HTTP200下有效，原先只解析protobuf�
 
 本轮只更改模块交互/API准入，不改变模型请求协议、预算、断点恢复或SSE事件契约；无schema迁移、真实模型费用或生产容量验收。原有业务教案与账号不作为故障注入对象。临时验收环境完成后关闭，本机正式服务使用现有私有配置平滑重启。
 
+### 同日补充：已确认模块回看后继续
+
+用户截图指出第二模块已确认时，“确认，继续下一步”仍被禁用。新增两项回归及生成中继续按钮断言，先复现3项失败，再修复已确认分支：显示“继续下一步”，仅进入下一个启用模块，不重复POST确认；最后一个已确认模块明确显示终态。未确认、大纲确认、脏编辑、顺序门禁和任务互斥保持原规则。
+
+最终前端8文件78项、TypeScript、生产构建和diff检查通过；general/TypeScript只读复审无P1/P2。隔离9012实际页面确认第二模块后刷新、回看第二模块，再点击继续，成功进入第三模块；只读数据库对比确认content_version=5、2个Run、2个模块版本及完整状态/版本指针均不变。没有真实模型调用。证据 `.cache/module-confirmed-evidence.json`，截图 `.cache/module-confirmed-continue.jpg`、`.cache/module-confirmed-next.jpg`。
+
+检查正式服务时发现旧本地启动组已退出，当前仅有19:45启动的独立Uvicorn API、无Worker；当时0活动Run。保留API进程31032，通过既有 `run_local.py --child` 补启七类Worker，私有进程记录 `.cache/local-runtime/worker-repair.json`；全部健康且队列深度0。未修改 `.env`、数据库schema或用户教案。本次仅前端重新构建，8000已返回新版资源入口。
+
+### 同日补充：进入新模块自动生成
+
+进入已解锁、无正式正文且仍pending的结构化模块时自动调用既有step入口；确认后继续、回看已确认模块再继续、目录进入均适用。沿用同步AI请求门控和前序确认限制，按教案/模块记录一次自动尝试；启动中显示进度，失败后保留显式重试入口。已有版本、脏编辑和润色候选不自动覆盖，教学过程只自动生成outline。
+
+新增自动启动回归先复现6项失败；复审进一步按真实接口补出失败/取消教案从历史重新打开，以及active_run_id缺失时终态早于正文读回的重复生成风险，均先红后绿关闭。最终导航29项、前端全量8文件95项、TypeScript、生产构建及diff检查通过；general/TypeScript定向复审无剩余P1/P2。没有后端协议、schema或依赖变更，未重复执行后端长套件。
+
+独立9012 SQLite/mock页面只点击第二模块的“继续下一步”，第三模块自动从“正在启动模块生成”运行至待确认正文。Run `ee9aef1c-7965-4b1e-8d22-1edc2e5afe47` completed；刷新并回看后数据库仍恰好只增加1个Run和1个模块版本，前两模块版本指针保留。零真实Provider调用。证据 `.cache/module-auto-evidence.json`，截图 `.cache/module-auto-generated.jpg`。8000已返回最终新版资源入口，API/七类Worker均healthy；临时页面与mock服务验收后关闭。
+
+## 追加验收：Langfuse full 输入输出采集（2026-10-20）
+
+按用户明确要求启用 `OBS_CAPTURE_MODE=full`。`llm.request` 采集实际 Provider 消息与成功接收的模型原文；业务根节点输出使用该 Run 已提交的版本和快照，后续编辑不会改写历史结果。内部步骤按明确的业务投影提供正文或摘要，失败/不完整响应不伪造成功输出，回执重放不新增真实调用或 token。内容只进入远端已结束 observation，本地日志和 `/admin` 保持元数据。
+
+- 内容采集先完成 RED/GREEN 回归，再经 general、Python、安全独立审查。修复审查发现的认证/Cookie头、敏感 URL query、短密钥前缀遮蔽及正则性能问题；加入幂等脱敏、循环/深度/节点限制和每字段默认64KiB UTF-8 JSON上限，超长内容保留预览与截断标记。没有调用任意对象的字符串转换或遍历方法。
+- 最终 `test_observability_content/capture/full_flow/exporter/sdk/gateway` 与 `test_gateway_receipts` 七个文件共97 passed（71.55秒），覆盖真实锁定SDK的OTLP字段、实际MockTransport消息/原始响应、metadata隔离、回执重放、已提交根结果及诊断失败隔离。Ruff与diff检查通过，无未关闭P1/P2。
+- 真实自托管 full canary 经v2 API读回3个观察，Trace `3d9755818bec5b4e94082a7732ab7a46` 的根/子输入输出及凭证探针脱敏通过；另以metadata覆盖运行同一canary，确认不发送输入输出。两次均零Provider请求，证据 `.cache/langfuse-full-verification-final.json` 和 `.cache/langfuse-metadata-verification-final.json`。
+- 实际登录Langfuse，打开full合成节点详情，页面可见中文Input与Output，截图 `.cache/langfuse-full-input-output.jpg`。模型请求的真实消息与原始回复由上述MockTransport契约测试验证，本轮未再次调用收费模型。
+- 确认无活动Run后，使用原有本地启动器平滑重启本项目API和七类Worker，实例 `574d0b09294444c19f64a594a7e06006`。管理员API确认capture_mode=full、configured/enabled/running=true；最终 `/health` 为healthy且七队列深度0。私有 `.cache/langfuse-app.env` 已同步full，用户 `.env` SHA256保持不变；证据 `.cache/langfuse-full-runtime.json`。
+- 额外后端全量回归在知识库用例长时间没有推进后中止，未获得完整结果，不报告全套通过。该用例单独复查1 passed（59.20秒），证据 `.cache/full-capture-isolated-knowledge.xml`；全量停顿原因尚未确认。专项最终结果见 `.cache/full-capture-focused.xml`。
+
+本轮无schema或依赖变更；旧metadata记录不会自动补齐正文，没有实际输入输出语义的内部节点仍可为空。脱敏不等于移除所有业务隐私，full会向本机Langfuse发送选定的业务内容。默认配置仍为metadata；当前实例已显式启用full，后续重启需依照[部署说明](Langfuse自托管部署.md)加载同一私有配置。
+
 ## 未验证与实施取舍
 
 - 已执行真实Provider最小完整canary；尚未系统评估教学质量、成本分布与时延分布，也未验证COS网络读写。Gateway主备故障情形使用受控MockTransport验证。

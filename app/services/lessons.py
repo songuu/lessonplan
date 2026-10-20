@@ -12,7 +12,7 @@ from uuid import uuid4
 from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.inspection import inspect
 
-from app.ai.observability import observe_step, step
+from app.ai.observability import mark_input, mark_output, observe_step, step
 from app.core.errors import AppError
 from app.db.models import (
     Blueprint,
@@ -32,6 +32,7 @@ from app.db.models import (
     RunCheckpoint,
     Snapshot,
 )
+from app.observability import current_span
 
 TERMINAL = {"completed", "failed", "cancelled"}
 FOREGROUND = {"one_click", "interactive_step", "module_polish_message", "reflection_polish_message"}
@@ -444,6 +445,8 @@ class WorkflowExecutor:
 
     @observe_step("checkpoint.save", run_type="tool")
     async def save_checkpoint(self, run_id, key, payload, fingerprint):
+        mark_input({"checkpoint_key": key, "payload_fields": sorted(payload),
+                    "call_count": len(payload.get("calls", []))})
         async with self.app.state.db.session_factory() as session:
             await self.lock_execution(session, run_id)
             existing = await session.scalar(select(RunCheckpoint).where(RunCheckpoint.run_id == run_id,
@@ -454,15 +457,18 @@ class WorkflowExecutor:
             else:
                 existing.input_fingerprint, existing.payload = fingerprint, payload
             await session.commit()
+        mark_output({"saved": True, "checkpoint_key": key})
 
     @observe_step("checkpoint.load", run_type="tool")
     async def load_checkpoints(self, run_id, fingerprint):
+        mark_input({"run_id": run_id, "input_fingerprint": fingerprint})
         async with self.app.state.db.session_factory() as session:
             await self.lock_execution(session, run_id)
             rows = (await session.scalars(select(RunCheckpoint).where(RunCheckpoint.run_id == run_id))).all()
             if any(row.input_fingerprint != fingerprint for row in rows):
                 # Losing the old ledger would incorrectly grant another complete call/retry budget.
                 raise AppError("CHECKPOINT_CONTEXT_CHANGED", "恢复上下文或受控资产已变更，请重新创建教案", 409)
+            mark_output({"checkpoint_keys": [row.checkpoint_key for row in rows], "checkpoint_count": len(rows)})
             return {row.checkpoint_key: row.payload for row in rows}
 
     async def emit(self, run_id, kind, payload):
@@ -473,6 +479,7 @@ class WorkflowExecutor:
         await self.app.state.dispatcher.notify(run_id)
 
     async def execute(self, run_id, expected_epoch=0):
+        execution_span = current_span()
         if self.lease is None:
             if not await self.claim(run_id, expected_epoch):
                 return
@@ -495,6 +502,13 @@ class WorkflowExecutor:
                 return
             await event(session, run, "run_started", {"run_id": run.id, "workflow_type": run.workflow_type})
             data, payload, workflow = input_of(draft) if draft else {}, dict(run.payload), run.workflow_type
+            if execution_span is not None:
+                # Run payloads can grow over time; export only known business inputs.
+                captured_payload = {key: payload[key] for key in (
+                    "module_id", "stage", "instruction", "working_content", "scope", "selection_start",
+                    "selection_end", "session_id", "message_id", "export_id", "format", "document_id"
+                ) if key in payload}
+                execution_span.set_input({"workflow": workflow, "payload": captured_payload, "lesson": data})
             await session.commit()
         heartbeat = asyncio.create_task(self.heartbeat(asyncio.current_task()), name=f"lease-{run_id}-{expected_epoch}")
         try:
@@ -525,6 +539,43 @@ class WorkflowExecutor:
         finally:
             heartbeat.cancel()
             await asyncio.gather(heartbeat, return_exceptions=True)
+            await self.capture_committed_output(run_id, expected_epoch, execution_span)
+
+    async def capture_committed_output(self, run_id, expected_epoch, span):
+        """A generated value is not a business result until its transaction committed."""
+        if span is None or not span.capture_enabled:
+            return
+        try:
+            async with asyncio.timeout(.2), self.app.state.db.session_factory() as session:
+                run = await session.get(Run, run_id)
+                if not run or run.execution_epoch != expected_epoch or run.status not in TERMINAL:
+                    return
+                output = {"status": run.status, "result": run.result}
+                if run.status != "completed":
+                    output["error_code"] = run.error_code
+                elif run.workflow_type in {"one_click", "interactive_step"}:
+                    # Current draft pointers may already have changed; these events retain the
+                    # exact version identities that were committed by this execution.
+                    facts = (await session.scalars(select(Event).where(Event.run_id == run_id,
+                        Event.event_type.in_(["module_done", "draft_ready"])).order_by(Event.sequence))).all()
+                    version_ids = [fact.payload.get("version_id") for fact in facts
+                                   if fact.event_type == "module_done" and fact.payload.get("version_id")]
+                    versions = (await session.scalars(select(ModuleVersion).where(
+                        ModuleVersion.id.in_(version_ids), ModuleVersion.draft_id == run.draft_id))).all()
+                    by_id = {version.id: version for version in versions}
+                    output["modules"] = [{"module_id": by_id[vid].module_id, "version_id": vid,
+                        "teacher_view_content": by_id[vid].teacher_view_content,
+                        "canonical_content": by_id[vid].canonical_content} for vid in version_ids if vid in by_id]
+                    snapshot_id = next((fact.payload.get("snapshot_id") for fact in facts
+                                        if fact.event_type == "draft_ready"), None)
+                    if snapshot_id:
+                        snapshot = await session.get(Snapshot, snapshot_id)
+                        if snapshot and snapshot.draft_id == run.draft_id:
+                            output["snapshot"] = {"snapshot_id": snapshot.id, "content": snapshot.content}
+                span.set_output(output)
+        except Exception:
+            # Optional diagnostic readback must not turn a committed success into a failure.
+            span.set(observability_error_code="CONTENT_RESULT_UNAVAILABLE")
 
     async def fail(self, run_id, code, message, *, cancelled=False, calls=None, findings=None, expected_epoch=None, expired_only=False):
         async with self.app.state.db.session_factory() as session:
@@ -598,6 +649,8 @@ class WorkflowExecutor:
 
     @observe_step("workflow.generate")
     async def generate(self, run_id, data, payload, workflow):
+        mark_input({"lesson": data, "workflow": workflow,
+                    "module_id": payload.get("module_id"), "stage": payload.get("stage")})
         async with self.app.state.db.session_factory() as session:
             run, draft = await self.lock_execution(session, run_id)
             modules = [m for m in draft.modules if m.get("enabled", True)]
@@ -705,7 +758,11 @@ class WorkflowExecutor:
             if workflow == "one_click":
                 review_run = await self.queue_review(session, draft, run)
             with step("business.commit", run_type="tool"):
+                mark_input({"operation": "module_versions", "module_ids": [module["module_id"] for module in result["modules"]]})
                 await session.commit()
+                mark_output({"committed": True})
+        mark_output({"committed": True, "draft_id": draft.id,
+                     "module_ids": [module["module_id"] for module in result["modules"]]})
         if review_run:
             await self.app.state.dispatcher.submit(review_run.id)
         await self.app.state.dispatcher.notify(run_id)
@@ -724,6 +781,8 @@ class WorkflowExecutor:
         content = payload["working_content"]
         if payload.get("scope") == "selection":
             content = content[payload["selection_start"]:payload["selection_end"]]
+        mark_input({"lesson": data, "content": content, "instruction": payload["instruction"],
+                    "scope": payload.get("scope", "module")})
         async with self.app.state.db.session_factory() as session:
             run, _ = await self.lock_execution(session, run_id)
             polish = await session.get(PolishSession, payload["session_id"])
@@ -774,7 +833,10 @@ class WorkflowExecutor:
             await finish(session, run, "completed", result=ready,
                 degraded=any(call.get("fallback_used", call.get("fallback")) for call in result.get("calls", [])))
             with step("business.commit", run_type="tool"):
+                mark_input({"operation": "polish_candidate", "message_id": payload["message_id"]})
                 await session.commit()
+                mark_output({"committed": True})
+        mark_output({"committed": True, **ready})
         await self.app.state.dispatcher.notify(run_id)
 
     @observe_step("workflow.export")

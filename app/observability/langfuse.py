@@ -19,9 +19,24 @@ from typing import Any
 from urllib.parse import urlsplit
 from uuid import UUID
 
-from app.observability.tracer import safe_token, sanitize_metadata
+from app.observability.tracer import (
+    FrozenDict,
+    content_limit,
+    export_event_budget,
+    safe_token,
+    sanitize_metadata,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _plain_snapshot(value: Any) -> Any:
+    # Only our own frozen snapshots need thawing; unknown user objects stay opaque to the sanitizer.
+    if type(value) is FrozenDict:
+        return {key: _plain_snapshot(child) for key, child in value.items()}
+    if type(value) is tuple:
+        return [_plain_snapshot(child) for child in value]
+    return value
 
 
 def _secret(value: Any) -> str:
@@ -33,7 +48,7 @@ def _secret(value: Any) -> str:
 def _configuration_error(settings: Any) -> str | None:
     if not getattr(settings, "langfuse_enabled", False):
         return "observability_disabled"
-    if getattr(settings, "obs_capture_mode", "metadata") != "metadata":
+    if getattr(settings, "obs_capture_mode", "metadata") not in {"metadata", "full"}:
         return "observability_capture_mode_unsupported"
     if not (_secret(getattr(settings, "langfuse_public_key", ""))
             and _secret(getattr(settings, "langfuse_secret_key", ""))):
@@ -88,6 +103,7 @@ class SDKTransport:
         reason = _configuration_error(settings)
         if reason:
             raise ExportError(reason)
+        self.settings = settings
         self.attributes = LangfuseOtelSpanAttributes
         self.base_url = settings.langfuse_base_url.rstrip("/")
         self.endpoint = f"{self.base_url}/api/public/otel/v1/traces"
@@ -123,6 +139,14 @@ class SDKTransport:
             attributes.TRACE_PUBLIC: False,
             attributes.ENVIRONMENT: self.environment,
         }
+        if getattr(self.settings, "obs_capture_mode", "metadata") == "full":
+            from app.observability.content import configured_secrets, sanitize_content
+
+            for name, key in (("input", attributes.OBSERVATION_INPUT), ("output", attributes.OBSERVATION_OUTPUT)):
+                if name in event:
+                    captured, _ = sanitize_content(_plain_snapshot(event[name]), max_bytes=content_limit(self.settings),
+                                                    secrets=configured_secrets(self.settings))
+                    values[key] = json.dumps(captured, ensure_ascii=False, separators=(",", ":"))
         # Trace/session fields are copied to every observation so Langfuse can filter/aggregate them.
         thread_id = metadata.get("thread_id")
         if thread_id:
@@ -218,7 +242,7 @@ class LangfuseExporter:
         self.transport = transport
         self.retry_delay = retry_delay
         self.capacity = max(1, int(getattr(settings, "obs_export_queue_size", 512)))
-        self.max_event_bytes = max(1024, int(getattr(settings, "obs_max_event_bytes", 16384)))
+        self.max_event_bytes = export_event_budget(settings)
         self.queue: queue.Queue[bytes] = queue.Queue(self.capacity)
         self.disabled_reason = _configuration_error(settings)
         self.configured = self.disabled_reason is None
@@ -250,7 +274,11 @@ class LangfuseExporter:
                 self._dropped += 1
                 return False
             try:
-                payload = json.dumps(event, ensure_ascii=True, separators=(",", ":")).encode()
+                record = dict(event)
+                if getattr(self.settings, "obs_capture_mode", "metadata") != "full":
+                    record.pop("input", None)
+                    record.pop("output", None)
+                payload = json.dumps(record, ensure_ascii=False, separators=(",", ":")).encode()
                 if len(payload) > self.max_event_bytes:
                     self._dropped += 1
                     self._diagnostic("observability_payload_dropped")
@@ -300,7 +328,9 @@ class LangfuseExporter:
             batch.append(self.queue.get(timeout=wait))
         except queue.Empty:
             return
-        while len(batch) < 32:
+        # Content-bearing records are larger; keep their aggregate HTTP batch bounded too.
+        batch_limit = min(32, max(1, 524288 // self.max_event_bytes))
+        while len(batch) < batch_limit:
             try:
                 batch.append(self.queue.get_nowait())
             except queue.Empty:
@@ -384,7 +414,9 @@ class LangfuseExporter:
             return {"provider": "langfuse", "enabled": enabled, "remote_enabled": enabled,
                     "configured": self.configured, "disabled_reason": self.disabled_reason,
                     "last_error_code": self.disabled_reason or next(reversed(self._last_diagnostic), None),
-                    "capture_mode": "metadata", "running": self._thread is not None and self._thread.is_alive(),
+                    "capture_mode": getattr(self.settings, "obs_capture_mode", "metadata"),
+                    "max_content_bytes": content_limit(self.settings),
+                    "running": self._thread is not None and self._thread.is_alive(),
                     "accepting": enabled and not self._closed,
                     "project": safe_token(getattr(self.settings, "langfuse_project", None)),
                     "sent": self._sent, "failed": self._failed, "dropped": self._dropped,

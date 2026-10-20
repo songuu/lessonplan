@@ -12,7 +12,7 @@ from jsonschema import ValidationError
 
 from .assets import AssetBundle
 from .gateway import Completion, GatewayError, LLMGateway, invoke, setting
-from .observability import mark, observe_step, step
+from .observability import mark, mark_input, mark_output, observe_step, step
 from .quality import ModuleQualityGate, SafePatchProcessor
 
 
@@ -293,11 +293,14 @@ class LessonRuntime:
         state = state or _Execution(self.settings)
         mark(route=route or workflow, step_key=step_key or state.active_step or workflow,
              quality_attempt=attempt or state.active_attempt or 1, prompt_version=self.assets.version)
+        mark_input({"workflow": workflow, "route": route or workflow, "request": payload})
         if state.invocation_store is not None:
-            return await self._receipt_call(workflow, inputs, modules, payload, calls, route=route,
+            content = await self._receipt_call(workflow, inputs, modules, payload, calls, route=route,
                 mock=mock, on_delta=on_delta, on_reset=on_reset, state=state,
                 step_key=step_key or state.active_step or workflow,
                 attempt=attempt or state.active_attempt or 1)
+            mark_output(content)
+            return content
         if state.calls_started >= self.assets.policy["max_calls"]:
             raise RuntimeError("runtime_budget_exceeded", "本次生成达到调用预算，请缩减模块后重试。", calls=calls)
         system = self.assets.prompt(workflow, inputs, modules)
@@ -328,6 +331,7 @@ class LessonRuntime:
         await state.budget()
         if len(result.content) > self.assets.policy["max_output_chars"]:
             raise RuntimeError("generation_output_limit", "AI 正文超出本次大小限制。", calls=calls)
+        mark_output(result.content)
         return result.content
 
     @staticmethod
@@ -416,8 +420,12 @@ class LessonRuntime:
                 finally:
                     state.receiving_response = False
                 # Raw response archival precedes all success budget/quality/module/business commits.
-                with step("receipt.save", run_type="tool", invocation_id=receipt["id"]):
+                with step("receipt.save", run_type="tool", invocation_id=receipt["id"]) as receipt_span:
+                    if receipt_span is not None:
+                        receipt_span.set_input({"invocation_id": receipt["id"], "response_chars": len(result.content)})
                     receipt = await store.save_response(receipt["id"], result)
+                    if receipt_span is not None:
+                        receipt_span.set_output({"status": receipt["status"], "response_hash": receipt.get("response_hash")})
                 self._receipt_ledger(state, calls, receipt, result, reused=False)
                 if callback_error is not None:
                     raise callback_error
@@ -435,6 +443,8 @@ class LessonRuntime:
                   call_id=receipt["call_id"], capture_epoch=receipt.get("capture_epoch"),
                   receipt_reused=True):
             mark(receipt_reused=True)
+            mark_input({"invocation_id": receipt["id"], "step_key": receipt["step_key"], "source": "saved_response"})
+            mark_output(content)
         self._receipt_ledger(state, calls, receipt, result, reused=reused)
         await state.budget()
         if len(content) > self.assets.policy["max_output_chars"]:
@@ -484,19 +494,29 @@ class LessonRuntime:
             await state.budget()
             feedback = state.failures.get(key, {}).get("codes", [])
             try:
-                with step("generation.attempt", step_key=key, module_id=module_id, quality_attempt=current):
+                with step("generation.attempt", step_key=key, module_id=module_id, quality_attempt=current) as attempt_span:
+                    if attempt_span is not None:
+                        attempt_span.set_input({"step_key": key, "module_id": module_id, "attempt": current,
+                                                "feedback_codes": feedback})
                     raw = await producer({"codes": feedback, "attempt": current} if feedback else None)
+                    if attempt_span is not None:
+                        attempt_span.set_output({"raw_response": raw})
                     with step("quality.validate", step_key=key, module_id=module_id,
                               quality_attempt=current) as quality_span:
+                        if quality_span is not None:
+                            quality_span.set_input({"raw_response": raw})
                         try:
                             value = validator(raw)
                         except Exception as exc:
                             if quality_span is not None:
                                 quality_span.set(validation_outcome="failed")
-                                quality_span.fail(getattr(exc, "code", "generation_schema_failed"))
+                                error_code = getattr(exc, "code", "generation_schema_failed")
+                                quality_span.fail(error_code)
+                                quality_span.set_output({"validation_outcome": "failed", "error_code": error_code})
                             raise
                         if quality_span is not None:
                             quality_span.set(validation_outcome="passed")
+                            quality_span.set_output({"validation_outcome": "passed", "result": value})
             except ValidationError:
                 error = RuntimeError("generation_schema_failed", "AI 结构化内容不符合受控格式。")
             except RuntimeError as exc:
@@ -534,7 +554,8 @@ class LessonRuntime:
         except (RuntimeError, ValidationError, ValueError, KeyError, TypeError):
             raise RuntimeError("checkpoint_invalid", "模块恢复记录未通过重新校验。", calls=state.calls) from None
         with step("checkpoint.restore", run_type="tool", module_id=module["module_id"], stage=stage):
-            pass
+            mark_input({"checkpoint_key": key, "module_id": module["module_id"], "stage": stage})
+            mark_output({"restored": True, "content_chars": len(result["teacher_view_content"])})
         await state.progress("checkpoint_restored", module_id=module["module_id"], checkpoint_key=key)
         await invoke(state.event_sink, "module_started", {"module_id": module["module_id"], "is_temporary": True})
         await invoke(state.event_sink, "module_delta", {"module_id": module["module_id"], "delta": result["teacher_view_content"],
@@ -607,6 +628,8 @@ class LessonRuntime:
                        invocation_store=None) -> dict:
         inputs = self._context(inputs)
         modules = self._normalize_modules(modules)
+        mark_input({"lesson": inputs, "modules": modules, "stage": stage, "outline": outline,
+                    "blueprint": blueprint, "dependencies": dependencies})
         state = _Execution(self.settings, resume=resume, checkpoint_sink=checkpoint_sink, event_sink=event_sink,
                            invocation_store=invocation_store)
         event_sink = state.event_sink
@@ -666,6 +689,7 @@ class LessonRuntime:
                     if restored is not None:
                         completed[module["module_id"]] = restored
                 results = await self._one_click(inputs, modules, blueprint, completed, state)
+            mark_output({"modules": results, "blueprint": blueprint})
             return {"modules": results, "blueprint": blueprint, "calls": state.calls,
                     "findings": [{**finding, "module_id": module["module_id"]}
                                  for module in results for finding in module["findings"]],
@@ -681,9 +705,13 @@ class LessonRuntime:
 
     @observe_step("generation.one_click")
     async def _one_click(self, inputs, modules, blueprint, completed, state):
+        mark_input({"lesson": inputs, "modules": modules, "blueprint": blueprint,
+                    "restored_module_ids": list(completed)})
         pending = [module for module in modules if module["module_id"] not in completed]
         if not pending:
-            return [completed[module["module_id"]] for module in modules]
+            results = [completed[module["module_id"]] for module in modules]
+            mark_output({"modules": results})
+            return results
         # A batch receipt describes its original membership, even after a prefix was checkpointed.
         direct_receipt = await state.invocation_store.find("batch:direct", 1) if state.invocation_store else None
         if direct_receipt:
@@ -840,7 +868,9 @@ class LessonRuntime:
             if mid not in completed:
                 completed[mid] = await self._module_candidate(inputs, module, blueprint,
                     {key: value["teacher_view_content"] for key, value in completed.items()}, state, route="one_click")
-        return [completed[module["module_id"]] for module in modules]
+        results = [completed[module["module_id"]] for module in modules]
+        mark_output({"modules": results})
+        return results
 
     async def _replay_completed(self, state, modules, completed):
         for module in modules:
@@ -889,6 +919,7 @@ class LessonRuntime:
 
         payload = {"input": inputs, "blueprint": blueprint, "module": module,
                    "confirmed_dependencies": dependencies, "stage": stage}
+        mark_input({**payload, "outline": outline})
         canonical = {"stage": stage}
         if module["module_type"] == "teaching_process" and stage == "outline":
             duration = float(inputs.get("total_duration_min", 40))
@@ -991,6 +1022,7 @@ class LessonRuntime:
         await invoke(sink, "module_completed", {"module_id": mid, "is_temporary": True})
         await state.progress("quality_check_and_repair_started", module_id=mid)
         await state.save(key, result)
+        mark_output(result)
         return result
 
     def _dependency_order(self, modules):
@@ -1027,6 +1059,7 @@ class LessonRuntime:
             raise RuntimeError("polish_input_required", "请提供原文与润色指令。")
         if len(content) + len(instruction) > self.assets.policy["max_input_chars"]:
             raise RuntimeError("context_size_limit", "润色文本超出大小限制。")
+        mark_input({"lesson": inputs, "content": content, "instruction": instruction, "scope": scope})
         state = _Execution(self.settings, event_sink=event_sink, checkpoint_sink=checkpoint_sink, resume=resume,
                            invocation_store=invocation_store)
         event_sink = state.event_sink
@@ -1064,6 +1097,7 @@ class LessonRuntime:
             else:
                 result = await self._validated(state, "polish", produce, validate, reset=reset)
                 await state.save("polish", result)
+            mark_output({"content": result["teacher_view_content"], "scope": scope, "findings": result["findings"]})
             return {"content": result["teacher_view_content"], "calls": state.calls, "findings": result["findings"],
                     "metadata": result["metadata"], "scope": scope, "assets": self.assets.fingerprint()}
         except _CallbackFailure as exc:
@@ -1077,6 +1111,7 @@ class LessonRuntime:
     async def review(self, inputs: dict, modules: list[dict], *, checkpoint_sink: Callable | None = None,
                      resume: dict | None = None, event_sink: Callable | None = None, invocation_store=None) -> dict:
         inputs = self._context(inputs)
+        mark_input({"lesson": inputs, "modules": modules})
         state = _Execution(self.settings, checkpoint_sink=checkpoint_sink, resume=resume, event_sink=event_sink,
                            invocation_store=invocation_store)
 
@@ -1100,6 +1135,7 @@ class LessonRuntime:
             else:
                 parsed = await self._validated(state, "review", produce, lambda raw: validate_value(_json_content(raw)))
                 await state.save("review", parsed)
+            mark_output({"findings": parsed.get("findings", [])})
             return {**parsed, "calls": state.calls, "assets": self.assets.fingerprint()}
         except _CallbackFailure as exc:
             raise exc.original from None

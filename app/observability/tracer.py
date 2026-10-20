@@ -1,4 +1,4 @@
-"""Local execution spans with explicit, bounded and content-free export snapshots."""
+"""Metadata-only local spans with optional bounded, redacted remote content."""
 
 from __future__ import annotations
 
@@ -45,6 +45,7 @@ _STRING_FIELDS = frozenset({
 _BOOL_FIELDS = frozenset({
     "receipt_reused", "usage_known", "usage_reported", "is_demo", "resumed", "sampled", "streaming",
     "fallback_used", "checkpoint_reused", "metadata_truncated", "committed", "cached", "enabled",
+    "input_truncated", "output_truncated", "input_capture_failed", "output_capture_failed",
 })
 _NUMBER_FIELDS = frozenset({
     "quality_attempt", "attempt", "transport_attempt", "capture_epoch", "execution_epoch",
@@ -110,6 +111,17 @@ def sanitize_metadata(metadata: Mapping[str, Any] | None) -> dict[str, Any]:
     return result
 
 
+def content_limit(settings: Any) -> int:
+    return max(1024, min(1048576, int(getattr(settings, "obs_max_content_bytes", 65536))))
+
+
+def export_event_budget(settings: Any) -> int:
+    budget = max(1024, int(getattr(settings, "obs_max_event_bytes", 16384)))
+    if getattr(settings, "obs_capture_mode", "metadata") == "full":
+        budget += 2 * content_limit(settings) + 1024
+    return budget
+
+
 @dataclass
 class _TraceState:
     sampled: bool
@@ -159,12 +171,18 @@ class Span:
                 self._metadata.pop(key, None)
         self.status = "running"
         self._events: list[dict[str, Any]] = []
+        self._content: dict[str, Any] = {}
         self._ended = False
         self.recorded = state.admit(self.run_type, observer.max_spans)
 
     @property
     def metadata(self) -> dict[str, Any]:
         return FrozenDict(self._metadata)
+
+    @property
+    def capture_enabled(self) -> bool:
+        return (not self._ended and self.recorded and self.observer.capture_full
+                and self.state.sampled and self.observer.cloud_requested)
 
     def set(self, **metadata: Any) -> None:
         if self._ended:
@@ -188,6 +206,25 @@ class Span:
         if code in {"lease_lost", "execution_lease_lost", "run_lease_lost"}:
             status = "lease_lost"
         self.set(status=status, error_code=code)
+
+    def set_input(self, value: Any) -> None:
+        self._capture("input", value)
+
+    def set_output(self, value: Any) -> None:
+        self._capture("output", value)
+
+    def _capture(self, name: str, value: Any) -> None:
+        if not self.capture_enabled:
+            return
+        from app.observability.content import sanitize_content
+
+        try:
+            captured, truncated = sanitize_content(value, max_bytes=self.observer.max_content_bytes,
+                                                   secrets=self.observer.content_secrets)
+            self._content[name] = captured
+            self.set(**{f"{name}_truncated": truncated})
+        except Exception:
+            self.set(**{f"{name}_capture_failed": True})
 
     def event(self, name: str) -> None:
         name = safe_token(name)
@@ -235,7 +272,10 @@ class Span:
         if self.status == "running":
             self.status = "completed"
         self._ended = True
-        self.observer._emit(self, "end")
+        try:
+            self.observer._emit(self, "end")
+        finally:
+            self._content.clear()
 
 
 def _valid_uuid(value: Any) -> str | None:
@@ -258,6 +298,13 @@ class Observer:
         self.deployment_id = safe_token(getattr(settings, "obs_deployment_id", "local"), fallback="local")
         self.sample_rate = min(1.0, max(0.0, float(getattr(settings, "obs_trace_sample_rate", 1.0))))
         self.max_event_bytes = max(1024, int(getattr(settings, "obs_max_event_bytes", 16384)))
+        self.max_content_bytes = content_limit(settings)
+        self.capture_full = getattr(settings, "obs_capture_mode", "metadata") == "full"
+        self.content_secrets: tuple[str, ...] = ()
+        if self.capture_full and self.cloud_requested:
+            from app.observability.content import configured_secrets
+
+            self.content_secrets = configured_secrets(settings)
         self.max_spans = max(33, min(256, int(getattr(settings, "obs_max_spans_per_trace", 256))))
         self.local_dropped = 0
         self.payload_dropped = 0
@@ -365,7 +412,11 @@ class Observer:
                 self.local_dropped += 1
         if self.cloud_requested and span.state.sampled and self.exporter is not None:
             try:
-                self.exporter.submit(snapshot)
+                # Content belongs only to this completed observation, never local logs or child metadata.
+                remote = dict(event)
+                if phase == "end" and self.capture_full:
+                    remote.update(span._content)
+                self.exporter.submit(_freeze(remote))
             except Exception:
                 # Instrumentation must never replace or swallow a business exception.
                 self.payload_dropped += 1

@@ -73,11 +73,22 @@ Get-Content -LiteralPath .cache/langfuse-app.env | Where-Object { $_ -and -not $
 | `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` | 与独立实例中项目匹配的凭证 |
 | `LANGFUSE_PROJECT` | 管理端显示的项目名；不是云端项目选择开关 |
 | `OBS_DEPLOYMENT_ID` | 同一部署持久保留，用于恢复执行的追踪关联 |
-| `OBS_CAPTURE_MODE` | `metadata`，不采集 Prompt、知识原文和教案正文 |
+| `OBS_CAPTURE_MODE` | 默认 `metadata`；`full` 向本机 Langfuse 采集脱敏后的业务输入、Prompt、模型回复及已提交结果 |
+| `OBS_MAX_CONTENT_BYTES` | full 模式每个 input/output 字段的 UTF-8 JSON 上限，默认 `65536`，允许 `1024`–`1048576` |
 
 若业务 API/Worker 运行在 Docker Desktop 容器内，其 `127.0.0.1` 指向容器本身。可为这些进程配置 `LANGFUSE_BASE_URL=http://host.docker.internal:3100`，并从该业务容器验证连通性；不应修改浏览器登录使用的 `NEXTAUTH_URL`。Linux 主机需要相应 host-gateway 解析或经审查的内部网络连接。不要通过开放全部端口解决容器地址问题。
 
 Compose 不导入 AWS 凭证、Langfuse Cloud 或 LangSmith 配置，也不配置付费 AI 功能连接。进程级 SDK 关闭云端上报后，本地执行日志仍可使用。
+
+### full 内容采集
+
+在应用配置中设置 `OBS_CAPTURE_MODE=full`，并按上文加载同一份私有 Langfuse 配置后重启 API 和全部 Worker。仅修改环境文件不会更新已有进程。本机用户 `.env` 已设为 full，`.cache/langfuse-app.env` 已同步 full；当前运行实例通过后者启用上报，未改写用户 `.env`。
+
+`llm.request` 的 Input 是实际发送给 Provider 的消息，Output 是成功收到的原始模型正文；生成、质量校验、回执、检查点提供明确内容或结构摘要。任务根节点输入包含业务参数，输出按该 Run 已提交的版本/快照读取，避免后续编辑覆盖历史语义。失败或不完整模型响应不伪造成功 Output；回执重放仍是普通 tool 节点，不重复记录计费 token。
+
+正文仅进入 Langfuse 的已结束 observation，不进入本地执行日志或 `/admin` API，也不自动传给子节点。凭证字段、认证/Cookie头、敏感 URL query、常见 API Key/JWT 和已配置密钥会脱敏；超长内容采用有效 JSON 预览并带 `input_truncated`/`output_truncated` 标记。单条远端事件预算包含独立内容预算，批量数量随之收缩；`OBS_MAX_EVENT_BYTES` 仍约束本地元数据事件。关闭上报或未抽样时不捕获正文。
+
+使用 [Langfuse v4 的 observation input/output 字段](https://langfuse.com/integrations/native/opentelemetry/migration-to-v4)，根业务内容放在根 observation。旧 metadata 追踪不会自动补齐正文；没有实际语义输入/输出的内部节点仍可为空。
 
 ## 4. 验证链路
 
@@ -89,11 +100,13 @@ Compose 不导入 AWS 凭证、Langfuse Cloud 或 LangSmith 配置，也不配�
 
 初始本地日志可能为空，历史任务不会自动补传。页面默认手动刷新，可显式开启每 5 秒增量刷新；加载更多保留先前记录。若质量校验失败但传输成功，需分别检查质量步骤和实际模型请求，不能将 HTTP 成功等同于业务完成。
 
-仅验证监控链路时，可用合成追踪避免调用模型。默认dry-run不发网络请求，显式live会发送三个无正文的合成步骤，并通过v2 Observations API读回身份和父子关系：
+仅验证监控链路时，可用合成追踪避免调用模型。默认dry-run不发网络请求，显式live会发送三个合成步骤，并通过v2 Observations API读回身份和父子关系。metadata 不发送正文；full 还会校验合成输入输出和凭证脱敏：
 
 ```powershell
 .venv/Scripts/python.exe scripts/check_langfuse_flow.py
-.venv/Scripts/python.exe scripts/check_langfuse_flow.py --live --env-file .cache/langfuse-app.env
+.venv/Scripts/python.exe scripts/check_langfuse_flow.py --live --capture-mode metadata --env-file .cache/langfuse-app.env
+# full 验收：合成内容、凭证探针脱敏及远端读回，不调用模型
+.venv/Scripts/python.exe scripts/check_langfuse_flow.py --live --capture-mode full --output .cache/langfuse-full-verification.json
 ```
 
 成功证据写入 `.cache/langfuse-verification.json`。使用官方原生OTLP路径及v4实时入库header；Langfuse v4的JSON入队确认与标准protobuf响应均支持。确认成功仍不替代读回验证。

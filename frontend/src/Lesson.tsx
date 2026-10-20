@@ -116,8 +116,10 @@ export function LessonPage() {
   runIdRef.current = runId;
   const completedRunIdRef = useRef("");
   const [run, setRun] = useState<Run | null>(null);
+  const [terminalReadbackRunId, setTerminalReadbackRunId] = useState("");
   const [watchRevision, setWatchRevision] = useState(0);
   const aiActionPending = useRef(false);
+  const autoGenerationAttempts = useRef(new Set<string>());
   const [reconnecting, setReconnecting] = useState(false);
   const [streams, setStreams] = useState<Record<string, string>>({});
   const [progress, setProgress] = useState("正在准备教学设计");
@@ -164,6 +166,9 @@ export function LessonPage() {
   const selectedIndex = enabled.findIndex(
     (item) => item.module_id === selectedId,
   );
+  const nextModule =
+    selectedIndex >= 0 ? enabled[selectedIndex + 1] : undefined;
+  const moduleConfirmed = module?.state?.confirmation_status === "confirmed";
   const moduleReadOnly =
     interactive &&
     selectedIndex >= 0 &&
@@ -372,6 +377,7 @@ export function LessonPage() {
     }
     try {
       await load(false, latest.id);
+      if (latest.id === runIdRef.current) setTerminalReadbackRunId(latest.id);
     } catch {
       /* The received preview survives a failed formal-version readback. */
     }
@@ -395,6 +401,7 @@ export function LessonPage() {
     let pendingRetry: { moduleId: string | null; message: string } | null =
       null;
     setRun(null);
+    setTerminalReadbackRunId("");
     completedRunIdRef.current = "";
     setStreams({});
     setModulePhases({});
@@ -818,8 +825,70 @@ export function LessonPage() {
       endAiAction();
     }
   };
+  useEffect(() => {
+    if (
+      loading ||
+      !interactive ||
+      !draft ||
+      ["failed", "failed_retryable", "cancelled"].includes(draft.status) ||
+      !module?.enabled ||
+      module.current_version_id ||
+      module.state?.generation_status !== "pending" ||
+      module.state?.last_error ||
+      draft.active_run_id ||
+      running ||
+      busy ||
+      aiActionPending.current ||
+      moduleReadOnly ||
+      dirty ||
+      working ||
+      outlineDirty ||
+      polish ||
+      error
+    )
+      return;
+    // A terminal event can precede the authoritative version/state readback.
+    if (runId && terminalReadbackRunId !== runId) return;
+    if (
+      run &&
+      ["failed", "cancelled"].includes(run.status) &&
+      (!run.payload?.module_id || run.payload.module_id === selectedId)
+    )
+      return;
+    const attemptKey = `${id}:${selectedId}`;
+    if (autoGenerationAttempts.current.has(attemptKey)) return;
+    // Record before submitting: rerenders and failed startup must not repeat AI requests.
+    autoGenerationAttempts.current.add(attemptKey);
+    void generate(
+      module.module_type === "teaching_process" ? "outline" : undefined,
+    );
+  }, [
+    loading,
+    interactive,
+    draft,
+    module,
+    running,
+    busy,
+    moduleReadOnly,
+    dirty,
+    working,
+    outlineDirty,
+    polish,
+    error,
+    run,
+    runId,
+    terminalReadbackRunId,
+    id,
+    selectedId,
+    generate,
+  ]);
   const confirm = async (isOutline = false) => {
     if (!module || busy || running || moduleReadOnly) return;
+    // Revisited confirmed modules only need navigation, without another write.
+    if (!isOutline && moduleConfirmed) {
+      if (!dirty && nextModule) chooseModule(nextModule.module_id);
+      return;
+    }
     setBusy(true);
     try {
       await post(`/lesson-drafts/${id}/interactive/confirm`, {
@@ -1426,23 +1495,35 @@ export function LessonPage() {
                   total={draft.total_duration_min}
                 />
               ) : !working && !module.current_version_id ? (
-                <Empty
-                  title={isProcess ? "先梳理课堂环节" : "让这个模块的思路成形"}
-                  action={
-                    <button
-                      className="button primary"
-                      disabled={busy || running}
-                      onClick={() =>
-                        void generate(isProcess ? "outline" : undefined)
-                      }
-                    >
-                      <Sparkles size={17} />
-                      {isProcess ? "生成教学大纲" : "生成当前模块"}
-                    </button>
-                  }
-                >
-                  生成后可以继续编辑、润色，再确认教学设计。
-                </Empty>
+                busy || (running && runKind === "generation") ? (
+                  <Spinner label="正在启动模块生成" />
+                ) : (
+                  <Empty
+                    title={
+                      isProcess ? "先梳理课堂环节" : "让这个模块的思路成形"
+                    }
+                    action={
+                      <button
+                        className="button primary"
+                        disabled={busy || running || moduleReadOnly}
+                        onClick={() =>
+                          void generate(isProcess ? "outline" : undefined)
+                        }
+                      >
+                        <Sparkles size={17} />
+                        {autoGenerationAttempts.current.has(
+                          `${id}:${selectedId}`,
+                        )
+                          ? "重试生成"
+                          : isProcess
+                            ? "生成教学大纲"
+                            : "生成当前模块"}
+                      </button>
+                    }
+                  >
+                    生成后可以继续编辑、润色，再确认教学设计。
+                  </Empty>
+                )
               ) : (
                 <RichEditor
                   key={`${id}:${selectedId}:${module.current_version_id || "draft"}`}
@@ -1572,11 +1653,18 @@ export function LessonPage() {
                           moduleReadOnly ||
                           dirty ||
                           !module.current_version_id ||
-                          module.state?.confirmation_status === "confirmed"
+                          (moduleConfirmed &&
+                            (!nextModule ||
+                              !!moduleNavigationReason(nextModule.module_id)))
                         }
                         onClick={() => void confirm()}
                       >
-                        确认，继续下一步 <ArrowRight size={15} />
+                        {moduleConfirmed
+                          ? nextModule
+                            ? "继续下一步"
+                            : "当前模块已确认"
+                          : "确认，继续下一步"}
+                        <ArrowRight size={15} />
                       </button>
                     )}
                   </div>

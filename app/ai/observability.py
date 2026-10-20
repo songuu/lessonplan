@@ -1,4 +1,4 @@
-"""Explicit, metadata-only instrumentation for the existing runtime.
+"""Explicit instrumentation for the existing runtime.
 
 Context is established by a claimed execution, never by an untrusted HTTP header.
 """
@@ -29,3 +29,16 @@ def mark(**metadata):
     span = current_span()
     if span is not None:
         span.set(**metadata)
+
+
+def mark_input(value):
+    """Capture only a caller-selected business value, never function arguments."""
+    span = current_span()
+    if span is not None:
+        span.set_input(value)
+
+
+def mark_output(value):
+    span = current_span()
+    if span is not None:
+        span.set_output(value)

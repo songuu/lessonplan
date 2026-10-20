@@ -67,7 +67,8 @@ class Settings(BaseSettings):
     langfuse_project: str = ""
     obs_deployment_id: str = "lesson-assistant-local"
     obs_release: str = ""
-    obs_capture_mode: Literal["metadata"] = "metadata"
+    obs_capture_mode: Literal["metadata", "full"] = "metadata"
+    obs_max_content_bytes: int = Field(default=65536, ge=1024, le=1048576)
     obs_trace_sample_rate: float = Field(default=1, ge=0, le=1)
     obs_export_queue_size: int = Field(default=512, ge=1, le=10000)
     obs_max_event_bytes: int = Field(default=16384, ge=1024, le=65536)

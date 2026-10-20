@@ -73,7 +73,8 @@ flowchart LR
 | `LANGFUSE_PROJECT` | 可选管理端项目显示名 |
 | `OBS_DEPLOYMENT_ID` / `OBS_RELEASE` | 稳定部署身份与独立发布版本 |
 | `OBS_TRACE_SAMPLE_RATE` | 远端确定性采样，本地日志独立记录 |
-| `OBS_CAPTURE_MODE` | 当前为 metadata，其他模式需独立明确范围 |
+| `OBS_CAPTURE_MODE` | 默认 metadata；按用户后续明确要求增加 full，显式采集脱敏后的 observation 输入输出，本地日志始终只含元数据 |
+| `OBS_MAX_CONTENT_BYTES` | full 每字段 UTF-8 JSON 上限，默认 65536；截断显示预览及元数据标记 |
 | `OBS_EXPORT_QUEUE_SIZE` / `OBS_MAX_EVENT_BYTES` | 队列和单条数据上限 |
 | `OBS_EXPORT_TIMEOUT_SECONDS` / `OBS_SHUTDOWN_TIMEOUT_SECONDS` | 网络发送与停机等待边界 |
 
@@ -84,6 +85,8 @@ flowchart LR
 ## 故障和数据边界
 
 默认只允许受控标识、枚举、计数、时间和指纹；课题、教师姓名、文件名、资料/正文、选区、反思、密钥与原始异常都不上传或写入执行日志。数据进入队列前清洗，管理响应再清洗。
+
+同日用户明确要求使用 full 实现后，增加远端内容采集边界：仅在 `OBS_CAPTURE_MODE=full`、远端启用且该追踪被抽样时，显式选取的业务输入、实际消息、成功原始回复及已提交结果可进入 Langfuse observation input/output。本地日志与 `/admin` 仍遵守上述无正文边界；配置对象、凭证、原始异常/堆栈不采集。每字段默认64KiB UTF-8 JSON，超限有预览与标记；纯内部步骤仅记录结构摘要。具体部署及验证见[full内容采集](../Langfuse自托管部署.md#full-内容采集)。
 
 本地和远端队列均有界，满载时丢弃诊断并计数，不阻塞生成。发送有限超时与重试，云端/自托管不可用时熔断并输出受控本地诊断。关闭先完成业务任务，再在预算内排空。硬崩溃可能损失尚在内存中的诊断，因此数据库回执、终态和版本仍是业务事实依据。
 

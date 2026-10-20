@@ -1,4 +1,4 @@
-import { act } from "react";
+import { act, StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import type { Root } from "react-dom/client";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
@@ -36,16 +36,17 @@ const action = (name: string) =>
   )!;
 const heading = () =>
   host.querySelector(".module-editor-heading h2")?.textContent;
-async function mount(query = "") {
-  await act(async () =>
-    root.render(
+async function mount(query = "", strict = false) {
+  await act(async () => {
+    const page = (
       <MemoryRouter initialEntries={[`/lessons/d1${query}`]}>
         <Routes>
           <Route path="/lessons/:id" element={<LessonPage />} />
         </Routes>
-      </MemoryRouter>,
-    ),
-  );
+      </MemoryRouter>
+    );
+    root.render(strict ? <StrictMode>{page}</StrictMode> : page);
+  });
 }
 async function emit(event: string, data: Record<string, unknown>) {
   await act(async () => emitEvent({ id: "1", event, data }));
@@ -95,7 +96,17 @@ beforeEach(() => {
     async (id, _signal, onEvent, onState) => {
       emitEvent = onEvent;
       emitState = onState;
-      onState({ id, status: id === "old-run" ? "completed" : "running" });
+      const stepBody = vi
+        .mocked(post)
+        .mock.calls.filter(([path]) => path.endsWith("/interactive/step"))
+        .at(-1)?.[1] as { module_id: string } | undefined;
+      onState({
+        id,
+        status: id === "old-run" ? "completed" : "running",
+        ...(stepBody
+          ? { workflow_type: "interactive_step", payload: stepBody }
+          : {}),
+      });
     },
   );
   vi.mocked(post).mockImplementation(async (path) => {
@@ -121,12 +132,200 @@ it("keeps later modules locked until the current module is confirmed", async () 
   expect(post).not.toHaveBeenCalled();
   await act(async () => action("确认，继续下一步").click());
   expect(heading()).toBe("教学目标");
+  expect(post).toHaveBeenNthCalledWith(
+    2,
+    "/lesson-drafts/d1/interactive/step",
+    {
+      module_id: "m2",
+      expected_content_version: 2,
+      expected_current_module_version_id: null,
+      expected_module_config_version_id: "cfg",
+    },
+  );
   expect(nav("教学目标").disabled).toBe(false);
   expect(nav("教学重点").disabled).toBe(true);
   await act(async () => nav("教材分析").click());
   expect(heading()).toBe("教材分析");
   await act(async () => nav("教学目标").click());
   expect(heading()).toBe("教学目标");
+});
+
+it("continues from a revisited confirmed module without confirming it again", async () => {
+  for (const [i, item] of draft.modules.slice(0, 2).entries()) {
+    item.current_version_id = `v${i + 1}`;
+    item.teacher_view_content = `${item.display_name}已生成`;
+    item.state = {
+      generation_status: "ready",
+      confirmation_status: "confirmed",
+    };
+  }
+  await mount();
+  await act(async () => nav("教学目标").click());
+  expect(heading()).toBe("教学目标");
+  expect(action("继续下一步").disabled).toBe(false);
+  await act(async () => action("继续下一步").click());
+  expect(heading()).toBe("教学重点");
+  expect(post).toHaveBeenCalledTimes(1);
+  expect(post).toHaveBeenCalledWith(
+    "/lesson-drafts/d1/interactive/step",
+    expect.objectContaining({ module_id: "m3" }),
+  );
+  expect(draft.content_version).toBe(1);
+});
+
+it("automatically generates an empty unlocked module entered through the directory", async () => {
+  draft.modules[0].state.confirmation_status = "confirmed";
+  await mount();
+  expect(post).not.toHaveBeenCalled();
+  await act(async () => nav("教学目标").click());
+  expect(post).toHaveBeenCalledTimes(1);
+  expect(post).toHaveBeenCalledWith(
+    "/lesson-drafts/d1/interactive/step",
+    expect.objectContaining({ module_id: "m2" }),
+  );
+  await act(async () => nav("教材分析").click());
+  expect(post).toHaveBeenCalledTimes(1);
+  expect(action("重新生成").disabled).toBe(true);
+});
+
+it("admits one automatic first-module request under StrictMode", async () => {
+  draft.modules[0].current_version_id = null;
+  draft.modules[0].teacher_view_content = "";
+  draft.modules[0].state.generation_status = "pending";
+  await mount("", true);
+  expect(post).toHaveBeenCalledTimes(1);
+  expect(post).toHaveBeenCalledWith(
+    "/lesson-drafts/d1/interactive/step",
+    expect.objectContaining({ module_id: "m1" }),
+  );
+});
+
+it("automatically starts only the outline when entering a new teaching-process module", async () => {
+  draft.modules[0].state.confirmation_status = "confirmed";
+  draft.modules[1].module_type = "teaching_process";
+  await mount();
+  await act(async () => nav("教学目标").click());
+  expect(post).toHaveBeenCalledTimes(1);
+  expect(post).toHaveBeenCalledWith(
+    "/lesson-drafts/d1/interactive/step",
+    expect.objectContaining({ module_id: "m2", stage: "outline" }),
+  );
+});
+
+it("keeps teaching activities behind the explicit outline confirmation step", async () => {
+  draft.modules[0].state.confirmation_status = "confirmed";
+  draft.modules[1].module_type = "teaching_process";
+  draft.modules[1].current_version_id = "outline-version";
+  draft.modules[1].state = {
+    generation_status: "ready",
+    workflow_stage: "outline",
+    outline_confirmed: true,
+    outline: [{ stage_id: "s1", title: "导入", duration_min: 40 }],
+  };
+  await mount();
+  await act(async () => nav("教学目标").click());
+  expect(post).not.toHaveBeenCalled();
+  expect(action("生成课堂活动").disabled).toBe(false);
+});
+
+it.each([true, false])(
+  "waits for authoritative terminal readback with active_run_id present=%s",
+  async (activePointer) => {
+    draft.modules[0].current_version_id = null;
+    draft.modules[0].teacher_view_content = "";
+    draft.modules[0].state.generation_status = "pending";
+    if (activePointer) draft.active_run_id = "current-run";
+    await mount("?run=current-run");
+    let readback!: (value: Draft) => void;
+    vi.mocked(api).mockImplementation(
+      () =>
+        new Promise<Draft>((resolve) => {
+          readback = resolve;
+        }),
+    );
+    await act(async () =>
+      emitState({ id: "current-run", status: "completed" } as Run),
+    );
+    expect(post).not.toHaveBeenCalled();
+    draft.active_run_id = undefined;
+    draft.modules[0].current_version_id = "v1";
+    draft.modules[0].teacher_view_content = "刚刚生成的教材分析";
+    draft.modules[0].state.generation_status = "ready";
+    await act(async () => readback(structuredClone(draft)));
+    expect(post).not.toHaveBeenCalled();
+  },
+);
+
+it("does not automatically retry a failed server task whose module still appears pending", async () => {
+  draft.modules[0].current_version_id = null;
+  draft.modules[0].teacher_view_content = "";
+  draft.modules[0].state.generation_status = "pending";
+  draft.latest_run_id = "failed-run";
+  vi.mocked(watchRun).mockImplementation(
+    async (id, _signal, _onEvent, onState) => {
+      onState({ id, status: "failed", payload: { module_id: "m1" } });
+    },
+  );
+  await mount();
+  expect(post).not.toHaveBeenCalled();
+});
+
+it.each(
+  ["failed", "failed_retryable", "cancelled"].flatMap((status) =>
+    ["", "?run=old-run"].map((query) => ({ status, query })),
+  ),
+)(
+  "does not restart a $status draft opened from history with query '$query'",
+  async ({ status, query }) => {
+    draft.status = status;
+    draft.modules[0].current_version_id = null;
+    draft.modules[0].teacher_view_content = "";
+    draft.modules[0].state.generation_status = "pending";
+    await mount(query);
+    expect(post).not.toHaveBeenCalled();
+  },
+);
+
+it("offers an explicit retry instead of looping after automatic startup fails", async () => {
+  draft.modules[0].state.confirmation_status = "confirmed";
+  vi.mocked(post).mockRejectedValue(new Error("连接中断"));
+  await mount();
+  await act(async () => nav("教学目标").click());
+  expect(post).toHaveBeenCalledTimes(1);
+  expect(action("重试生成").disabled).toBe(false);
+  await act(async () => nav("教材分析").click());
+  await act(async () => nav("教学目标").click());
+  expect(post).toHaveBeenCalledTimes(1);
+  vi.mocked(post).mockResolvedValue({ run_id: "new-run" });
+  await act(async () => action("重试生成").click());
+  expect(post).toHaveBeenCalledTimes(2);
+});
+
+it.each(["failed", "failed_retryable", "cancelled"])(
+  "does not automatically rerun a module with generation status %s",
+  async (status) => {
+    draft.modules[0].state.confirmation_status = "confirmed";
+    draft.modules[1].state.generation_status = status;
+    await mount();
+    await act(async () => nav("教学目标").click());
+    expect(post).not.toHaveBeenCalled();
+  },
+);
+
+it("shows the confirmed final module without a misleading next-step action", async () => {
+  for (const [i, item] of draft.modules.entries()) {
+    item.current_version_id = `v${i + 1}`;
+    item.teacher_view_content = `${item.display_name}已生成`;
+    item.state = {
+      generation_status: "ready",
+      confirmation_status: "confirmed",
+    };
+  }
+  await mount();
+  await act(async () => nav("教学重点").click());
+  expect(action("当前模块已确认").disabled).toBe(true);
+  expect(action("继续下一步")).toBeUndefined();
+  expect(post).not.toHaveBeenCalled();
 });
 
 it("allows read-only lookback during generation and prevents a second AI action", async () => {
@@ -145,6 +344,7 @@ it("allows read-only lookback during generation and prevents a second AI action"
   ).toBe("true");
   expect(action("重新生成").disabled).toBe(true);
   expect(action("AI 润色").disabled).toBe(true);
+  expect(action("继续下一步").disabled).toBe(true);
   expect(nav("教学重点").disabled).toBe(true);
   await act(async () => {
     action("重新生成").click();
@@ -244,6 +444,7 @@ it("unlocks AI actions after the tracked task reaches a real terminal state", as
 });
 
 it("preserves read-only history when an earlier module needs confirmation again", async () => {
+  draft.modules[2].enabled = false;
   draft.modules[1].current_version_id = "v2";
   draft.modules[1].teacher_view_content = "此前完整生成的教学目标";
   draft.modules[1].state = {
@@ -260,7 +461,7 @@ it("preserves read-only history when an earlier module needs confirmation again"
   expect(action("重新生成").disabled).toBe(true);
   expect(action("AI 润色").disabled).toBe(true);
   expect(host.textContent).toContain("请先确认前面的模块");
-  expect(nav("教学重点").disabled).toBe(true);
+  expect(nav("教学重点")).toBeUndefined();
   await act(async () => nav("教材分析").click());
   await act(async () => action("确认，继续下一步").click());
   await act(async () => nav("教学目标").click());

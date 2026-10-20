@@ -101,6 +101,8 @@ class LLMGateway:
                           ls_provider="openai_compatible", ls_model_name=config["model"],
                           attempt_role="backup" if backup else "primary",
                           prompt_version=prompt_version) as request_span:
+                    if request_span is not None:
+                        request_span.set_input(messages)
                     first_delta = False
 
                     async def observed_delta(delta, *, observed_span=request_span, started_at=attempt_start):
@@ -133,6 +135,7 @@ class LLMGateway:
                                              usage_known=False)
                         raise
                     if request_span is not None:
+                        request_span.set_output(content)
                         request_span.set(transport_outcome="success")
                         request_span.usage({target: usage[source] for source, target in (
                             ("prompt_tokens", "input_tokens"), ("completion_tokens", "output_tokens"),
